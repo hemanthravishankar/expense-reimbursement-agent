@@ -12,6 +12,7 @@ import (
 
 	"github.com/hemanth-shankar/expense-agent/internal/ai"
 	"github.com/hemanth-shankar/expense-agent/internal/audit"
+	"github.com/hemanth-shankar/expense-agent/internal/clarification"
 	"github.com/hemanth-shankar/expense-agent/internal/duplicate"
 	"github.com/hemanth-shankar/expense-agent/internal/models"
 	"github.com/hemanth-shankar/expense-agent/internal/policy"
@@ -66,42 +67,20 @@ func main() {
 			Location:   "Bengaluru",
 		}
 
-	fmt.Println(
-		"Analyzing receipt...",
-	)
-
-	fmt.Println(
-		"File:",
-		imagePath,
-	)
-
-	fmt.Println(
-		"Run ID:",
-		runID,
-	)
+	fmt.Println("Analyzing receipt...")
+	fmt.Println("File:", imagePath)
+	fmt.Println("Run ID:", runID)
 
 	fmt.Println()
-
-	fmt.Println(
-		"Employee:",
-		employee.Name,
-	)
-
-	fmt.Println(
-		"Employee ID:",
-		employee.ID,
-	)
-
-	fmt.Println(
-		"Grade:",
-		employee.Grade,
-	)
+	fmt.Println("Employee:", employee.Name)
+	fmt.Println("Employee ID:", employee.ID)
+	fmt.Println("Grade:", employee.Grade)
 
 	client :=
 		ai.NewOllamaClient()
 
 	//
-	// STEP 1:
+	// STEP 1
 	// PRIMARY EXTRACTION
 	//
 	fmt.Println()
@@ -144,8 +123,8 @@ func main() {
 		false
 
 	//
-	// STEP 2:
-	// FALLBACK EXTRACTION
+	// STEP 2
+	// FALLBACK MODEL
 	//
 	if !validationResult.Valid {
 
@@ -213,14 +192,17 @@ func main() {
 	)
 
 	var duplicateResult *duplicate.Result
+
+	var clarificationResult *clarification.Result
+
 	var policyDecision *policy.Decision
 
 	finalStatus :=
 		"HUMAN_REVIEW_REQUIRED"
 
 	//
-	// STEP 3:
-	// DUPLICATE DETECTION
+	// STEP 3
+	// CONTINUE ONLY IF RECEIPT IS VALID
 	//
 	if validationResult.Valid {
 
@@ -234,6 +216,10 @@ func main() {
 			"The extracted receipt passed deterministic validation.",
 		)
 
+		//
+		// STEP 4
+		// DUPLICATE DETECTION
+		//
 		dupResult, dupErr :=
 			duplicate.Detect(
 				"data/audit",
@@ -248,6 +234,9 @@ func main() {
 				dupErr,
 			)
 
+			finalStatus =
+				"HUMAN_REVIEW_REQUIRED"
+
 		} else {
 
 			duplicateResult =
@@ -256,45 +245,80 @@ func main() {
 			printDuplicateResult(
 				dupResult,
 			)
-		}
 
-		//
-		// STEP 4:
-		// POLICY ENGINE
-		//
-		if duplicateResult != nil &&
-			duplicateResult.IsDuplicate {
+			//
+			// STEP 5
+			// EXACT DUPLICATE
+			//
+			if dupResult.IsDuplicate &&
+				dupResult.MatchType ==
+					duplicate.MatchExact {
 
-			finalStatus =
-				"DUPLICATE_DETECTED"
+				finalStatus =
+					"DUPLICATE_DETECTED"
 
-			fmt.Println()
+				fmt.Println()
 
-			fmt.Println(
-				"Policy evaluation skipped because the receipt appears to be a duplicate.",
-			)
-
-		} else {
-
-			companyPolicy :=
-				policy.DemoUSDPolicy()
-
-			decision :=
-				policy.Evaluate(
-					extraction,
-					employee,
-					companyPolicy,
+				fmt.Println(
+					"Exact duplicate detected.",
 				)
 
-			policyDecision =
-				&decision
+				fmt.Println(
+					"Claim processing has been stopped.",
+				)
 
-			finalStatus =
-				decision.Status
+			} else {
 
-			printPolicyDecision(
-				decision,
-			)
+				//
+				// STEP 6
+				// CLARIFICATION ENGINE
+				//
+				clarify :=
+					clarification.Evaluate(
+						extraction,
+						validationResult,
+						duplicateResult,
+					)
+
+				clarificationResult =
+					&clarify
+
+				if clarify.Required {
+
+					finalStatus =
+						"CLARIFICATION_REQUIRED"
+
+					printClarification(
+						clarify,
+					)
+
+				} else {
+
+					//
+					// STEP 7
+					// POLICY ENGINE
+					//
+					companyPolicy :=
+						policy.DemoUSDPolicy()
+
+					decision :=
+						policy.Evaluate(
+							extraction,
+							employee,
+							companyPolicy,
+						)
+
+					policyDecision =
+						&decision
+
+					finalStatus =
+						decision.Status
+
+					printPolicyDecision(
+						decision,
+					)
+				}
+			}
 		}
 
 	} else {
@@ -306,13 +330,13 @@ func main() {
 		)
 
 		fmt.Println(
-			"The receipt contains validation errors, so duplicate and policy checks were skipped.",
+			"The receipt still contains validation errors after AI escalation.",
 		)
 	}
 
 	//
-	// STEP 5:
-	// AUDIT
+	// STEP 8
+	// AUDIT TRAIL
 	//
 	auditRecord :=
 		audit.Record{
@@ -343,6 +367,8 @@ func main() {
 			Employee: employee,
 
 			DuplicateResult: duplicateResult,
+
+			ClarificationResult: clarificationResult,
 
 			PolicyDecision: policyDecision,
 
@@ -450,19 +476,9 @@ func printFinalExtraction(
 	}
 
 	fmt.Println()
-
-	fmt.Println(
-		"Final Receipt Extraction:",
-	)
-
-	fmt.Println(
-		"Model:",
-		model,
-	)
-
-	fmt.Println(
-		string(output),
-	)
+	fmt.Println("Final Receipt Extraction:")
+	fmt.Println("Model:", model)
+	fmt.Println(string(output))
 }
 
 func printFinalValidation(
@@ -481,14 +497,8 @@ func printFinalValidation(
 	}
 
 	fmt.Println()
-
-	fmt.Println(
-		"Final Validation Result:",
-	)
-
-	fmt.Println(
-		string(output),
-	)
+	fmt.Println("Final Validation Result:")
+	fmt.Println(string(output))
 }
 
 func printDuplicateResult(
@@ -507,26 +517,52 @@ func printDuplicateResult(
 	}
 
 	fmt.Println()
+	fmt.Println("Duplicate Detection Result:")
+	fmt.Println(string(output))
+}
+
+func printClarification(
+	result clarification.Result,
+) {
+
+	output, err :=
+		json.MarshalIndent(
+			result,
+			"",
+			"  ",
+		)
+
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	fmt.Println()
 
 	fmt.Println(
-		"Duplicate Detection Result:",
+		"Clarification Required:",
 	)
 
 	fmt.Println(
 		string(output),
 	)
 
-	if result.IsDuplicate {
+	fmt.Println()
 
-		fmt.Println()
+	fmt.Println(
+		"Questions for Employee:",
+	)
 
-		fmt.Println(
-			"WARNING: POSSIBLE DUPLICATE EXPENSE",
+	for i, question := range result.Questions {
+
+		fmt.Printf(
+			"%d. %s\n",
+			i+1,
+			question.Question,
 		)
 
-		fmt.Println(
-			"Matched previous run:",
-			result.MatchedRunID,
+		fmt.Printf(
+			"   Reason: %s\n",
+			question.Reason,
 		)
 	}
 }
@@ -547,14 +583,8 @@ func printPolicyDecision(
 	}
 
 	fmt.Println()
-
-	fmt.Println(
-		"Reimbursement Policy Decision:",
-	)
-
-	fmt.Println(
-		string(output),
-	)
+	fmt.Println("Reimbursement Policy Decision:")
+	fmt.Println(string(output))
 
 	fmt.Println()
 

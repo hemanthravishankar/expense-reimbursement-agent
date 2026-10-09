@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/hemanth-shankar/expense-agent/internal/clarification"
 	"github.com/hemanth-shankar/expense-agent/internal/duplicate"
 	"github.com/hemanth-shankar/expense-agent/internal/models"
 	"github.com/hemanth-shankar/expense-agent/internal/policy"
@@ -36,6 +37,8 @@ type Record struct {
 	Employee models.Employee `json:"employee"`
 
 	DuplicateResult *duplicate.Result `json:"duplicate_result,omitempty"`
+
+	ClarificationResult *clarification.Result `json:"clarification_result,omitempty"`
 
 	PolicyDecision *policy.Decision `json:"policy_decision,omitempty"`
 
