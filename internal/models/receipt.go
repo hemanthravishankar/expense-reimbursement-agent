@@ -1,0 +1,23 @@
+package models
+
+type ReceiptLineItem struct {
+	Name     string  `json:"name"`
+	Quantity float64 `json:"quantity"`
+	Amount   float64 `json:"amount"`
+}
+
+type ReceiptExtraction struct {
+	DocumentType       string            `json:"document_type"`
+	Merchant           string            `json:"merchant"`
+	ExpenseDate        string            `json:"expense_date"`
+	Subtotal           float64           `json:"subtotal"`
+	TaxAmount          float64           `json:"tax_amount"`
+	TotalAmount        float64           `json:"total_amount"`
+	Currency           string            `json:"currency"`
+	ReceiptNumber      string            `json:"receipt_number"`
+	PaymentMethod      string            `json:"payment_method"`
+	CategorySuggestion string            `json:"category_suggestion"`
+	LineItems          []ReceiptLineItem `json:"line_items"`
+	Confidence         float64           `json:"confidence"`
+	Warnings           []string          `json:"warnings"`
+}
