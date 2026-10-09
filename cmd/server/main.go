@@ -13,6 +13,7 @@ import (
 	"github.com/hemanth-shankar/expense-agent/internal/ai"
 	"github.com/hemanth-shankar/expense-agent/internal/audit"
 	"github.com/hemanth-shankar/expense-agent/internal/models"
+	"github.com/hemanth-shankar/expense-agent/internal/policy"
 	"github.com/hemanth-shankar/expense-agent/internal/validation"
 )
 
@@ -26,6 +27,7 @@ func main() {
 	startedAt := time.Now().UTC()
 
 	if len(os.Args) != 2 {
+
 		log.Fatalf(
 			"usage: go run ./cmd/server <receipt-image>",
 		)
@@ -37,6 +39,7 @@ func main() {
 		os.ReadFile(imagePath)
 
 	if err != nil {
+
 		log.Fatalf(
 			"failed to read receipt image: %v",
 			err,
@@ -48,6 +51,19 @@ func main() {
 
 	runID :=
 		generateRunID()
+
+	//
+	// Demo employee.
+	//
+	// Later this will come from the API/database.
+	//
+	employee := models.Employee{
+		ID:         "EMP10042",
+		Name:       "Ananya Rao",
+		Grade:      "B2",
+		Department: "Engineering",
+		Location:   "Bengaluru",
+	}
 
 	fmt.Println(
 		"Analyzing receipt...",
@@ -63,18 +79,36 @@ func main() {
 		runID,
 	)
 
+	fmt.Println()
+
+	fmt.Println(
+		"Employee:",
+		employee.Name,
+	)
+
+	fmt.Println(
+		"Employee ID:",
+		employee.ID,
+	)
+
+	fmt.Println(
+		"Grade:",
+		employee.Grade,
+	)
+
 	client :=
 		ai.NewOllamaClient()
 
+	//
+	// STEP 1
+	// PRIMARY AI EXTRACTION
+	//
 	fmt.Println()
 
 	fmt.Println(
 		"Running primary extraction with Qwen3-VL 4B...",
 	)
 
-	//
-	// PRIMARY EXTRACTION
-	//
 	extraction, err :=
 		client.ExtractReceipt(
 			context.Background(),
@@ -82,15 +116,21 @@ func main() {
 		)
 
 	if err != nil {
+
 		log.Fatal(err)
 	}
 
+	//
+	// STEP 2
+	// NORMALIZE AI OUTPUT
+	//
 	validation.NormalizeReceipt(
 		extraction,
 	)
 
 	//
-	// Preserve initial extraction for audit.
+	// STEP 3
+	// INITIAL VALIDATION
 	//
 	initialExtraction :=
 		cloneExtraction(extraction)
@@ -110,7 +150,8 @@ func main() {
 		false
 
 	//
-	// FALLBACK MODEL
+	// STEP 4
+	// ESCALATE TO 8B IF VALIDATION FAILS
 	//
 	if !validationResult.Valid {
 
@@ -168,16 +209,9 @@ func main() {
 		}
 	}
 
-	finalStatus :=
-		"HUMAN_REVIEW_REQUIRED"
-
-	if validationResult.Valid {
-		finalStatus =
-			"VALIDATED"
-	}
-
 	//
-	// PRINT FINAL RESULT
+	// STEP 5
+	// PRINT RECEIPT RESULT
 	//
 	printFinalExtraction(
 		extraction,
@@ -188,9 +222,18 @@ func main() {
 		validationResult,
 	)
 
-	fmt.Println()
+	//
+	// STEP 6
+	// POLICY EVALUATION
+	//
+	var policyDecision *policy.Decision
+
+	finalStatus :=
+		"HUMAN_REVIEW_REQUIRED"
 
 	if validationResult.Valid {
+
+		fmt.Println()
 
 		fmt.Println(
 			"STATUS: RECEIPT VALIDATED",
@@ -200,24 +243,49 @@ func main() {
 			"The extracted receipt passed deterministic validation.",
 		)
 
+		companyPolicy :=
+			policy.DemoUSDPolicy()
+
+		decision :=
+			policy.Evaluate(
+				extraction,
+				employee,
+				companyPolicy,
+			)
+
+		policyDecision =
+			&decision
+
+		finalStatus =
+			decision.Status
+
+		printPolicyDecision(
+			decision,
+		)
+
 	} else {
+
+		fmt.Println()
 
 		fmt.Println(
 			"STATUS: HUMAN REVIEW REQUIRED",
 		)
 
 		fmt.Println(
-			"The receipt still contains validation errors after AI escalation.",
+			"The receipt contains validation errors, so policy evaluation was skipped.",
 		)
 	}
 
 	//
-	// AUDIT TRAIL
+	// STEP 7
+	// SAVE AUDIT RECORD
 	//
 	auditRecord :=
 		audit.Record{
-			RunID:         runID,
-			ReceiptPath:   imagePath,
+			RunID: runID,
+
+			ReceiptPath: imagePath,
+
 			ReceiptSHA256: receiptHash,
 
 			StartedAt: startedAt,
@@ -238,10 +306,15 @@ func main() {
 
 			FinalValidation: validationResult,
 
+			Employee: employee,
+
+			PolicyDecision: policyDecision,
+
 			FinalStatus: finalStatus,
 		}
 
 	if fallbackUsed {
+
 		auditRecord.FallbackModel =
 			fallbackModel
 	}
@@ -330,6 +403,7 @@ func printFinalExtraction(
 		)
 
 	if err != nil {
+
 		log.Fatal(err)
 	}
 
@@ -361,6 +435,7 @@ func printFinalValidation(
 		)
 
 	if err != nil {
+
 		log.Fatal(err)
 	}
 
@@ -372,6 +447,66 @@ func printFinalValidation(
 
 	fmt.Println(
 		string(validationJSON),
+	)
+}
+
+func printPolicyDecision(
+	decision policy.Decision,
+) {
+
+	output, err :=
+		json.MarshalIndent(
+			decision,
+			"",
+			"  ",
+		)
+
+	if err != nil {
+
+		log.Fatal(err)
+	}
+
+	fmt.Println()
+
+	fmt.Println(
+		"Reimbursement Policy Decision:",
+	)
+
+	fmt.Println(
+		string(output),
+	)
+
+	fmt.Println()
+
+	fmt.Println(
+		"CLAIM STATUS:",
+		decision.Status,
+	)
+
+	fmt.Printf(
+		"Claimed Amount: %.2f %s\n",
+		decision.ClaimedAmount,
+		decision.Currency,
+	)
+
+	fmt.Printf(
+		"Reimbursable Amount: %.2f %s\n",
+		decision.ReimbursableAmount,
+		decision.Currency,
+	)
+
+	if decision.ExcessAmount > 0 {
+
+		fmt.Printf(
+			"Excess Amount: %.2f %s\n",
+			decision.ExcessAmount,
+			decision.Currency,
+		)
+	}
+
+	fmt.Println(
+		"Reason:",
+		decision.Reason,
 	)
 }
 
