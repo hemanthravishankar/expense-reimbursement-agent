@@ -11,6 +11,7 @@ import (
 	"github.com/hemanth-shankar/expense-agent/internal/duplicate"
 	"github.com/hemanth-shankar/expense-agent/internal/models"
 	"github.com/hemanth-shankar/expense-agent/internal/policy"
+	"github.com/hemanth-shankar/expense-agent/internal/storage"
 	"github.com/hemanth-shankar/expense-agent/internal/validation"
 )
 
@@ -48,6 +49,8 @@ type Record struct {
 	PolicyDecision *policy.Decision `json:"policy_decision,omitempty"`
 
 	FinalStatus string `json:"final_status"`
+
+	StoredDocument *storage.StoredDocument `json:"stored_document,omitempty"`
 }
 
 func Save(

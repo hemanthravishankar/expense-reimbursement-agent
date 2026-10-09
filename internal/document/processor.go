@@ -41,7 +41,7 @@ func Process(
 	}
 
 	mimeType :=
-		http.DetectContentType(data)
+		DetectMIMEType(data)
 
 	doc := &Document{
 		OriginalName: filepath.Base(filename),
@@ -270,4 +270,15 @@ func pageNumber(
 	}
 
 	return number
+}
+
+func DetectMIMEType(
+	data []byte,
+) string {
+
+	if len(data) == 0 {
+		return ""
+	}
+
+	return http.DetectContentType(data)
 }
