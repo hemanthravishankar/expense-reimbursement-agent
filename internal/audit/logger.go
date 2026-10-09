@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/hemanth-shankar/expense-agent/internal/duplicate"
 	"github.com/hemanth-shankar/expense-agent/internal/models"
 	"github.com/hemanth-shankar/expense-agent/internal/policy"
 	"github.com/hemanth-shankar/expense-agent/internal/validation"
@@ -34,6 +35,8 @@ type Record struct {
 
 	Employee models.Employee `json:"employee"`
 
+	DuplicateResult *duplicate.Result `json:"duplicate_result,omitempty"`
+
 	PolicyDecision *policy.Decision `json:"policy_decision,omitempty"`
 
 	FinalStatus string `json:"final_status"`
@@ -55,21 +58,24 @@ func Save(
 		)
 	}
 
-	filename := fmt.Sprintf(
-		"%s.json",
-		record.RunID,
-	)
+	filename :=
+		fmt.Sprintf(
+			"%s.json",
+			record.RunID,
+		)
 
-	path := filepath.Join(
-		directory,
-		filename,
-	)
+	path :=
+		filepath.Join(
+			directory,
+			filename,
+		)
 
-	data, err := json.MarshalIndent(
-		record,
-		"",
-		"  ",
-	)
+	data, err :=
+		json.MarshalIndent(
+			record,
+			"",
+			"  ",
+		)
 
 	if err != nil {
 
