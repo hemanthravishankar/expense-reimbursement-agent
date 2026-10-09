@@ -57,16 +57,12 @@ func NewOllamaClient() *OllamaClient {
 	return &OllamaClient{
 		BaseURL: OllamaURL,
 		Model:   VisionModel,
-
 		Client: &http.Client{
 			Timeout: 5 * time.Minute,
 		},
 	}
 }
 
-// Generate is a simple text-only call.
-// We can use this later for policy explanations,
-// clarification questions, summaries, etc.
 func (o *OllamaClient) Generate(
 	ctx context.Context,
 	prompt string,
@@ -74,17 +70,14 @@ func (o *OllamaClient) Generate(
 
 	requestBody := chatRequest{
 		Model: o.Model,
-
 		Messages: []chatMessage{
 			{
 				Role:    "user",
 				Content: prompt,
 			},
 		},
-
 		Stream: false,
 		Think:  false,
-
 		Options: map[string]any{
 			"temperature": 0,
 			"num_predict": 500,
@@ -94,35 +87,27 @@ func (o *OllamaClient) Generate(
 	return o.call(ctx, requestBody)
 }
 
-// ExtractReceipt performs the normal receipt extraction
-// using the smaller/faster 4B model.
 func (o *OllamaClient) ExtractReceipt(
 	ctx context.Context,
-	imageData []byte,
+	pages [][]byte,
 ) (*models.ReceiptExtraction, error) {
 
 	return o.extractReceiptWithModel(
 		ctx,
-		imageData,
+		pages,
 		VisionModel,
 		false,
 	)
 }
 
-// ExtractReceiptWithFallback performs a completely fresh
-// extraction using the stronger 8B model.
-//
-// We deliberately DO NOT send the first model's output
-// to the fallback model. This reduces anchoring on the
-// original model's mistake.
 func (o *OllamaClient) ExtractReceiptWithFallback(
 	ctx context.Context,
-	imageData []byte,
+	pages [][]byte,
 ) (*models.ReceiptExtraction, error) {
 
 	return o.extractReceiptWithModel(
 		ctx,
-		imageData,
+		pages,
 		FallbackVisionModel,
 		true,
 	)
@@ -130,13 +115,17 @@ func (o *OllamaClient) ExtractReceiptWithFallback(
 
 func (o *OllamaClient) extractReceiptWithModel(
 	ctx context.Context,
-	imageData []byte,
+	pages [][]byte,
 	model string,
 	isFallback bool,
 ) (*models.ReceiptExtraction, error) {
 
-	encodedImage :=
-		base64.StdEncoding.EncodeToString(imageData)
+	encodedImages, err :=
+		encodeImages(pages)
+
+	if err != nil {
+		return nil, err
+	}
 
 	prompt := primaryExtractionPrompt()
 
@@ -151,10 +140,7 @@ func (o *OllamaClient) extractReceiptWithModel(
 			{
 				Role:    "user",
 				Content: prompt,
-
-				Images: []string{
-					encodedImage,
-				},
+				Images:  encodedImages,
 			},
 		},
 
@@ -164,7 +150,7 @@ func (o *OllamaClient) extractReceiptWithModel(
 
 		Options: map[string]any{
 			"temperature": 0,
-			"num_predict": 1200,
+			"num_predict": 1600,
 		},
 	}
 
@@ -204,9 +190,54 @@ func (o *OllamaClient) extractReceiptWithModel(
 	return &extraction, nil
 }
 
+func encodeImages(
+	pages [][]byte,
+) ([]string, error) {
+
+	if len(pages) == 0 {
+		return nil, fmt.Errorf(
+			"no document pages were provided for extraction",
+		)
+	}
+
+	images :=
+		make(
+			[]string,
+			0,
+			len(pages),
+		)
+
+	for index, page := range pages {
+
+		if len(page) == 0 {
+			return nil, fmt.Errorf(
+				"document page %d is empty",
+				index+1,
+			)
+		}
+
+		images =
+			append(
+				images,
+				base64.StdEncoding.EncodeToString(
+					page,
+				),
+			)
+	}
+
+	return images, nil
+}
+
 func primaryExtractionPrompt() string {
 	return `
-Extract expense information from this receipt image.
+Extract expense information from the supplied receipt or invoice page images.
+
+The images may represent:
+- one receipt image
+- one invoice image
+- multiple pages from the SAME PDF document
+
+If multiple images are supplied, treat ALL pages as ONE expense document.
 
 Return ONLY valid JSON.
 Do not explain your reasoning.
@@ -241,30 +272,37 @@ General rules:
 
 - expense_date must use YYYY-MM-DD.
 - monetary fields must be JSON numbers.
-- use ISO currency codes such as USD, INR, EUR and GBP.
+- use ISO currency codes.
 - $ means USD.
 - ₹ means INR.
 - € means EUR.
 - £ means GBP.
-- missing string values must be "".
-- missing numeric values must be 0.
-- missing arrays must be [].
+- missing string = "".
+- missing number = 0.
+- missing array = [].
 - confidence must be between 0 and 1.
+
+For multi-page documents:
+
+- combine information across all pages.
+- return ONE expense object for the entire document.
+- do not count repeated totals more than once.
+- use the final payable/grand total for the entire document.
+- line items may appear across multiple pages.
+- do not treat page headers, footers or carried-forward totals as line items.
 
 Line item rules:
 
-- extract only purchased items.
-- do not treat modifiers as separate purchased items.
-- do not treat preparation instructions as purchased items.
-- do not assign the price of a nearby item to an unpriced line.
+- extract only genuine purchased items.
+- do not treat modifiers or preparation instructions as separate items.
+- do not assign a nearby item's price to an unpriced line.
 - if a line has no standalone visible price, normally treat it as
-  a modifier unless it is clearly a separate purchased item.
+  a modifier unless clearly shown as a purchased item.
 
 Examples of modifiers:
 
 - no bun
 - no ketchup
-- no bread
 - medium
 - medium rare
 - sauce on side
@@ -272,13 +310,12 @@ Examples of modifiers:
 - replacement bread
 - cooking instructions
 
-Before returning JSON:
+Before returning:
 
-- carefully verify the visible subtotal.
-- carefully verify the visible tax.
-- carefully verify the visible total.
-- check whether the actual purchased line items are consistent
-  with the visible subtotal.
+- verify subtotal.
+- verify tax.
+- verify total.
+- check whether line item amounts are consistent with subtotal.
 
 Allowed categories:
 
@@ -296,20 +333,22 @@ Other
 
 func fallbackExtractionPrompt() string {
 	return `
-Perform a completely fresh extraction of this receipt.
+Perform a completely fresh extraction of the supplied receipt or invoice.
+
+The supplied images may be multiple pages from ONE document.
 
 A previous automated extraction failed deterministic validation.
 
 IMPORTANT:
 
-- Ignore any previous extraction.
-- Independently inspect the ORIGINAL receipt image.
-- Extract only information that is actually visible.
-- Do not invent values simply to make calculations match.
-- Pay special attention to line items and their prices.
-- Carefully distinguish purchased items from modifiers,
-  substitutions and preparation instructions.
-- Do not assign a neighboring item's price to an unpriced line.
+- independently inspect every supplied page.
+- ignore any previous extraction.
+- extract only visible information.
+- do not invent values to make calculations match.
+- carefully distinguish purchased items from modifiers.
+- do not assign neighboring prices to unpriced lines.
+- combine multiple pages into ONE expense.
+- do not double-count repeated subtotal or total values.
 
 Return ONLY valid JSON.
 Do not explain your reasoning.
@@ -339,46 +378,25 @@ Use exactly this structure:
   "warnings": []
 }
 
-General rules:
+Rules:
 
 - expense_date must use YYYY-MM-DD.
-- monetary fields must be JSON numbers.
-- $ means USD.
-- ₹ means INR.
-- € means EUR.
-- £ means GBP.
-- missing string values must be "".
-- missing numeric values must be 0.
-- missing arrays must be [].
+- monetary values must be JSON numbers.
+- $ = USD.
+- ₹ = INR.
+- € = EUR.
+- £ = GBP.
+- missing string = "".
+- missing number = 0.
+- missing array = [].
 - confidence must be between 0 and 1.
 
-Line item rules:
+For multi-page documents:
 
-- include only genuine purchased items.
-- an unpriced modifier must NOT inherit the price of the next item.
-- an unpriced modifier must NOT inherit the price of the previous item.
-- a substitution or preparation instruction is not a separate
-  purchase unless it clearly has its own price.
-
-Examples of modifiers:
-
-- no bun
-- no ketchup
-- no bread
-- medium
-- medium rare
-- sauce on side
-- sub sourdough
-- substitutions
-- preparation instructions
-
-Before returning:
-
-1. identify the visible subtotal.
-2. identify the purchased line items.
-3. independently verify whether the line item amounts are
-   consistent with that subtotal.
-4. do not manufacture values to make them match.
+- use all pages as one document.
+- use the final grand/payable total.
+- do not add totals repeated on different pages.
+- extract line items across pages where possible.
 
 Allowed categories:
 

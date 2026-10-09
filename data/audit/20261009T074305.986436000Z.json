@@ -1,0 +1,136 @@
+{
+  "run_id": "20261009T074305.986436000Z",
+  "receipt_path": "data/receipts/test-receipt.jpg",
+  "receipt_sha256": "9afa12127e0094df05b9cc2516bda12894d7a4ea9e6575095d693a9558562a0a",
+  "started_at": "2026-10-09T07:43:05.985754Z",
+  "completed_at": "2026-10-09T07:43:27.810756Z",
+  "primary_model": "qwen3-vl:4b-instruct",
+  "fallback_used": false,
+  "initial_extraction": {
+    "document_type": "receipt",
+    "merchant": "FourthStreetMill",
+    "expense_date": "2018-09-29",
+    "subtotal": 49.5,
+    "tax_amount": 4.7,
+    "total_amount": 54.2,
+    "currency": "USD",
+    "receipt_number": "4J33",
+    "payment_method": "",
+    "category_suggestion": "Meals",
+    "line_items": [
+      {
+        "name": "Lamb Burger",
+        "quantity": 1,
+        "amount": 13
+      },
+      {
+        "name": "Kids Grilled Cheese",
+        "quantity": 1,
+        "amount": 5
+      },
+      {
+        "name": "Kids Fries",
+        "quantity": 1,
+        "amount": 3
+      },
+      {
+        "name": "Sweet Potato Fries",
+        "quantity": 1,
+        "amount": 8
+      },
+      {
+        "name": "Kids Cheeseburger",
+        "quantity": 1,
+        "amount": 7
+      },
+      {
+        "name": "Beef Burger",
+        "quantity": 1,
+        "amount": 10
+      },
+      {
+        "name": "Sides",
+        "quantity": 1,
+        "amount": 3.5
+      }
+    ],
+    "confidence": 0.98,
+    "warnings": null
+  },
+  "initial_validation": {
+    "valid": true,
+    "line_item_sum": 49.5,
+    "issues": []
+  },
+  "final_extraction": {
+    "document_type": "receipt",
+    "merchant": "FourthStreetMill",
+    "expense_date": "2018-09-29",
+    "subtotal": 49.5,
+    "tax_amount": 4.7,
+    "total_amount": 54.2,
+    "currency": "USD",
+    "receipt_number": "4J33",
+    "payment_method": "",
+    "category_suggestion": "Meals",
+    "line_items": [
+      {
+        "name": "Lamb Burger",
+        "quantity": 1,
+        "amount": 13
+      },
+      {
+        "name": "Kids Grilled Cheese",
+        "quantity": 1,
+        "amount": 5
+      },
+      {
+        "name": "Kids Fries",
+        "quantity": 1,
+        "amount": 3
+      },
+      {
+        "name": "Sweet Potato Fries",
+        "quantity": 1,
+        "amount": 8
+      },
+      {
+        "name": "Kids Cheeseburger",
+        "quantity": 1,
+        "amount": 7
+      },
+      {
+        "name": "Beef Burger",
+        "quantity": 1,
+        "amount": 10
+      },
+      {
+        "name": "Sides",
+        "quantity": 1,
+        "amount": 3.5
+      }
+    ],
+    "confidence": 0.98,
+    "warnings": null
+  },
+  "final_validation": {
+    "valid": true,
+    "line_item_sum": 49.5,
+    "issues": []
+  },
+  "employee": {
+    "id": "EMP10042",
+    "name": "Ananya Rao",
+    "grade": "B2",
+    "department": "Engineering",
+    "location": "Bengaluru"
+  },
+  "duplicate_result": {
+    "is_duplicate": true,
+    "match_type": "EXACT_HASH",
+    "confidence": 1,
+    "matched_run_id": "20261009T063524.812695000Z",
+    "reason": "Receipt SHA-256 exactly matches a previously processed receipt."
+  },
+  "final_status": "DUPLICATE_DETECTED"
+}

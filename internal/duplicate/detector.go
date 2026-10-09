@@ -32,6 +32,80 @@ type historicalAuditRecord struct {
 	FinalExtraction *models.ReceiptExtraction `json:"final_extraction"`
 }
 
+func DetectExactHash(
+	auditDirectory string,
+	receiptSHA256 string,
+) (Result, error) {
+
+	result := Result{
+		IsDuplicate: false,
+		MatchType:   MatchNone,
+		Confidence:  0,
+		Reason:      "No exact receipt hash match was found.",
+	}
+
+	if strings.TrimSpace(
+		receiptSHA256,
+	) == "" {
+
+		return result, nil
+	}
+
+	files, err :=
+		filepath.Glob(
+			filepath.Join(
+				auditDirectory,
+				"*.json",
+			),
+		)
+
+	if err != nil {
+
+		return result, fmt.Errorf(
+			"scan audit directory: %w",
+			err,
+		)
+	}
+
+	for _, path := range files {
+
+		data, err :=
+			os.ReadFile(path)
+
+		if err != nil {
+			continue
+		}
+
+		var historical historicalAuditRecord
+
+		if err := json.Unmarshal(
+			data,
+			&historical,
+		); err != nil {
+
+			continue
+		}
+
+		if historical.ReceiptSHA256 ==
+			receiptSHA256 {
+
+			return Result{
+				IsDuplicate: true,
+
+				MatchType: MatchExact,
+
+				Confidence: 1.0,
+
+				MatchedRunID: historical.RunID,
+
+				Reason: "Receipt SHA-256 exactly matches a previously processed receipt.",
+			}, nil
+		}
+	}
+
+	return result, nil
+}
+
 func Detect(
 	auditDirectory string,
 	receiptSHA256 string,

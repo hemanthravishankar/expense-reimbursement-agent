@@ -207,3 +207,55 @@ func writeHistory(
 		t.Fatal(err)
 	}
 }
+
+func TestDetectExactHashBeforeExtraction(
+	t *testing.T,
+) {
+
+	dir :=
+		t.TempDir()
+
+	writeHistory(
+		t,
+		dir,
+		"existing-run",
+		"same-sha256",
+		&models.ReceiptExtraction{
+			Merchant: "ABC Restaurant",
+		},
+	)
+
+	result, err :=
+		DetectExactHash(
+			dir,
+			"same-sha256",
+		)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !result.IsDuplicate {
+
+		t.Fatal(
+			"expected exact duplicate",
+		)
+	}
+
+	if result.MatchType != MatchExact {
+
+		t.Fatalf(
+			"expected %s, got %s",
+			MatchExact,
+			result.MatchType,
+		)
+	}
+
+	if result.Confidence != 1 {
+
+		t.Fatalf(
+			"expected confidence 1.0, got %.2f",
+			result.Confidence,
+		)
+	}
+}

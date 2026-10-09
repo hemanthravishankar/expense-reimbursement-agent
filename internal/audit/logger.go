@@ -19,18 +19,23 @@ type Record struct {
 	ReceiptPath   string `json:"receipt_path"`
 	ReceiptSHA256 string `json:"receipt_sha256"`
 
+	DocumentMIMEType string `json:"document_mime_type,omitempty"`
+	PageCount        int    `json:"page_count,omitempty"`
+
 	StartedAt   time.Time `json:"started_at"`
 	CompletedAt time.Time `json:"completed_at"`
 
-	PrimaryModel  string `json:"primary_model"`
+	AIProcessingSkipped bool `json:"ai_processing_skipped"`
+
+	PrimaryModel  string `json:"primary_model,omitempty"`
 	FallbackModel string `json:"fallback_model,omitempty"`
 	FallbackUsed  bool   `json:"fallback_used"`
 
-	InitialExtraction *models.ReceiptExtraction `json:"initial_extraction"`
+	InitialExtraction *models.ReceiptExtraction `json:"initial_extraction,omitempty"`
 
 	InitialValidation validation.ReceiptValidationResult `json:"initial_validation"`
 
-	FinalExtraction *models.ReceiptExtraction `json:"final_extraction"`
+	FinalExtraction *models.ReceiptExtraction `json:"final_extraction,omitempty"`
 
 	FinalValidation validation.ReceiptValidationResult `json:"final_validation"`
 
