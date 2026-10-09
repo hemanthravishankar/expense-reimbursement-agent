@@ -3,12 +3,16 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 
+	"github.com/hemanth-shankar/expense-agent/internal/claims"
 	"github.com/hemanth-shankar/expense-agent/internal/models"
+	"github.com/hemanth-shankar/expense-agent/internal/persistence"
+	"github.com/hemanth-shankar/expense-agent/internal/policy"
 	"github.com/hemanth-shankar/expense-agent/internal/workflow"
 )
 
@@ -23,8 +27,41 @@ type ExpenseProcessor interface {
 	) (*workflow.Result, error)
 }
 
+type ClaimRepository interface {
+	Create(
+		ctx context.Context,
+		result *workflow.Result,
+	) error
+
+	Get(
+		ctx context.Context,
+		claimID string,
+	) (*workflow.Result, error)
+
+	Update(
+		ctx context.Context,
+		result *workflow.Result,
+	) error
+
+	AppendEvent(
+		ctx context.Context,
+		claimID string,
+		eventType string,
+		payload any,
+	) error
+
+	GetEvents(
+		ctx context.Context,
+		claimID string,
+	) ([]persistence.ClaimEvent, error)
+}
+
 type Handler struct {
 	processor ExpenseProcessor
+
+	repository ClaimRepository
+
+	clarificationService *claims.Service
 }
 
 type errorResponse struct {
@@ -40,6 +77,23 @@ func NewHandler(
 	}
 }
 
+func NewHandlerWithRepository(
+	processor ExpenseProcessor,
+	repository ClaimRepository,
+) *Handler {
+
+	return &Handler{
+		processor: processor,
+
+		repository: repository,
+
+		clarificationService: claims.NewService(
+			repository,
+			policy.DemoUSDPolicy(),
+		),
+	}
+}
+
 func (h *Handler) RegisterRoutes(
 	mux *http.ServeMux,
 ) {
@@ -52,6 +106,21 @@ func (h *Handler) RegisterRoutes(
 	mux.HandleFunc(
 		"POST /api/v1/expenses/analyze",
 		h.analyzeExpense,
+	)
+
+	mux.HandleFunc(
+		"GET /api/v1/claims/{claimID}",
+		h.getClaim,
+	)
+
+	mux.HandleFunc(
+		"GET /api/v1/claims/{claimID}/events",
+		h.getClaimEvents,
+	)
+
+	mux.HandleFunc(
+		"POST /api/v1/claims/{claimID}/clarifications",
+		h.resolveClarification,
 	)
 }
 
@@ -114,7 +183,9 @@ func (h *Handler) analyzeExpense(
 	defer file.Close()
 
 	data, err :=
-		io.ReadAll(file)
+		io.ReadAll(
+			file,
+		)
 
 	if err != nil {
 
@@ -226,11 +297,394 @@ func (h *Handler) analyzeExpense(
 		return
 	}
 
+	//
+	// Persist business claim state.
+	//
+	if h.repository != nil {
+
+		if err :=
+			h.repository.Create(
+				r.Context(),
+				result,
+			); err != nil {
+
+			writeError(
+				w,
+				http.StatusInternalServerError,
+				fmt.Sprintf(
+					"failed to persist claim: %v",
+					err,
+				),
+			)
+
+			return
+		}
+
+		//
+		// Initial business lifecycle event.
+		//
+		if err :=
+			h.repository.AppendEvent(
+				r.Context(),
+				result.RunID,
+				"CLAIM_CREATED",
+				map[string]any{
+					"status": result.FinalStatus,
+
+					"employee_id": result.Employee.ID,
+
+					"document_sha256": result.ReceiptSHA256,
+				},
+			); err != nil {
+
+			writeError(
+				w,
+				http.StatusInternalServerError,
+				fmt.Sprintf(
+					"failed to persist claim event: %v",
+					err,
+				),
+			)
+
+			return
+		}
+	}
+
 	writeJSON(
 		w,
 		http.StatusOK,
 		result,
 	)
+}
+
+func (h *Handler) getClaim(
+	w http.ResponseWriter,
+	r *http.Request,
+) {
+
+	if h.repository == nil {
+
+		writeError(
+			w,
+			http.StatusServiceUnavailable,
+			"claim persistence is not configured",
+		)
+
+		return
+	}
+
+	claimID :=
+		strings.TrimSpace(
+			r.PathValue(
+				"claimID",
+			),
+		)
+
+	if claimID == "" {
+
+		writeError(
+			w,
+			http.StatusBadRequest,
+			"claim ID is required",
+		)
+
+		return
+	}
+
+	result, err :=
+		h.repository.Get(
+			r.Context(),
+			claimID,
+		)
+
+	if errors.Is(
+		err,
+		persistence.ErrClaimNotFound,
+	) {
+
+		writeError(
+			w,
+			http.StatusNotFound,
+			"claim not found",
+		)
+
+		return
+	}
+
+	if err != nil {
+
+		writeError(
+			w,
+			http.StatusInternalServerError,
+			fmt.Sprintf(
+				"failed to retrieve claim: %v",
+				err,
+			),
+		)
+
+		return
+	}
+
+	writeJSON(
+		w,
+		http.StatusOK,
+		result,
+	)
+}
+
+func (h *Handler) getClaimEvents(
+	w http.ResponseWriter,
+	r *http.Request,
+) {
+
+	if h.repository == nil {
+
+		writeError(
+			w,
+			http.StatusServiceUnavailable,
+			"claim persistence is not configured",
+		)
+
+		return
+	}
+
+	claimID :=
+		strings.TrimSpace(
+			r.PathValue(
+				"claimID",
+			),
+		)
+
+	if claimID == "" {
+
+		writeError(
+			w,
+			http.StatusBadRequest,
+			"claim ID is required",
+		)
+
+		return
+	}
+
+	//
+	// Verify the claim exists.
+	//
+	_, err :=
+		h.repository.Get(
+			r.Context(),
+			claimID,
+		)
+
+	if errors.Is(
+		err,
+		persistence.ErrClaimNotFound,
+	) {
+
+		writeError(
+			w,
+			http.StatusNotFound,
+			"claim not found",
+		)
+
+		return
+	}
+
+	if err != nil {
+
+		writeError(
+			w,
+			http.StatusInternalServerError,
+			fmt.Sprintf(
+				"failed to retrieve claim: %v",
+				err,
+			),
+		)
+
+		return
+	}
+
+	events, err :=
+		h.repository.GetEvents(
+			r.Context(),
+			claimID,
+		)
+
+	if err != nil {
+
+		writeError(
+			w,
+			http.StatusInternalServerError,
+			fmt.Sprintf(
+				"failed to retrieve claim events: %v",
+				err,
+			),
+		)
+
+		return
+	}
+
+	writeJSON(
+		w,
+		http.StatusOK,
+		events,
+	)
+}
+
+func (h *Handler) resolveClarification(
+	w http.ResponseWriter,
+	r *http.Request,
+) {
+
+	if h.clarificationService == nil {
+
+		writeError(
+			w,
+			http.StatusServiceUnavailable,
+			"clarification service is not configured",
+		)
+
+		return
+	}
+
+	claimID :=
+		strings.TrimSpace(
+			r.PathValue(
+				"claimID",
+			),
+		)
+
+	if claimID == "" {
+
+		writeError(
+			w,
+			http.StatusBadRequest,
+			"claim ID is required",
+		)
+
+		return
+	}
+
+	var request claims.ClarificationAnswerRequest
+
+	decoder :=
+		json.NewDecoder(
+			http.MaxBytesReader(
+				w,
+				r.Body,
+				1<<20,
+			),
+		)
+
+	decoder.DisallowUnknownFields()
+
+	if err :=
+		decoder.Decode(
+			&request,
+		); err != nil {
+
+		writeError(
+			w,
+			http.StatusBadRequest,
+			"invalid clarification request",
+		)
+
+		return
+	}
+
+	result, err :=
+		h.clarificationService.ResolveClarification(
+			r.Context(),
+			claimID,
+			request,
+		)
+
+	switch {
+
+	case err == nil:
+
+		writeJSON(
+			w,
+			http.StatusOK,
+			result,
+		)
+
+	case errors.Is(
+		err,
+		persistence.ErrClaimNotFound,
+	):
+
+		writeError(
+			w,
+			http.StatusNotFound,
+			"claim not found",
+		)
+
+	case errors.Is(
+		err,
+		claims.ErrNoPendingClarification,
+	):
+
+		writeError(
+			w,
+			http.StatusConflict,
+			err.Error(),
+		)
+
+	case errors.Is(
+		err,
+		claims.ErrQuestionNotFound,
+	):
+
+		writeError(
+			w,
+			http.StatusBadRequest,
+			err.Error(),
+		)
+
+	case errors.Is(
+		err,
+		claims.ErrInvalidAnswer,
+	):
+
+		writeError(
+			w,
+			http.StatusBadRequest,
+			err.Error(),
+		)
+
+	case errors.Is(
+		err,
+		claims.ErrExplanationRequired,
+	):
+
+		writeError(
+			w,
+			http.StatusBadRequest,
+			err.Error(),
+		)
+
+	case errors.Is(
+		err,
+		claims.ErrUnsupportedClarification,
+	):
+
+		writeError(
+			w,
+			http.StatusBadRequest,
+			err.Error(),
+		)
+
+	default:
+
+		writeError(
+			w,
+			http.StatusInternalServerError,
+			fmt.Sprintf(
+				"failed to resolve clarification: %v",
+				err,
+			),
+		)
+	}
 }
 
 func writeError(
@@ -263,16 +717,13 @@ func writeJSON(
 		status,
 	)
 
-	if err :=
-		json.NewEncoder(w).
-			Encode(value); err != nil {
-
-		http.Error(
+	_ =
+		json.NewEncoder(
 			w,
-			`{"error":"failed to encode response"}`,
-			http.StatusInternalServerError,
-		)
-	}
+		).
+			Encode(
+				value,
+			)
 }
 
 func WithCORS(

@@ -1,0 +1,29 @@
+services:
+  postgres:
+    image: postgres:18
+    container_name: expense-agent-postgres
+    restart: unless-stopped
+
+    environment:
+      POSTGRES_DB: expense_agent
+      POSTGRES_USER: expense_agent
+      POSTGRES_PASSWORD: expense_agent_dev_password
+
+    ports:
+      - "5432:5432"
+
+    volumes:
+      - expense_agent_postgres:/var/lib/postgresql
+
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U expense_agent -d expense_agent"
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  expense_agent_postgres:

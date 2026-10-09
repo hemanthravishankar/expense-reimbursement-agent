@@ -1,29 +1,80 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/hemanth-shankar/expense-agent/internal/ai"
 	expenseapi "github.com/hemanth-shankar/expense-agent/internal/api"
+	"github.com/hemanth-shankar/expense-agent/internal/persistence"
 	"github.com/hemanth-shankar/expense-agent/internal/workflow"
 )
 
 func main() {
 
+	ctx :=
+		context.Background()
+
+	//
+	// AI client.
+	//
 	client :=
 		ai.NewOllamaClient()
 
+	//
+	// Expense processing workflow.
+	//
 	processor :=
 		workflow.NewProcessor(
 			client,
 			workflow.DefaultConfig(),
 		)
 
+	//
+	// PostgreSQL.
+	//
+	databaseURL :=
+		os.Getenv(
+			"DATABASE_URL",
+		)
+
+	if databaseURL == "" {
+
+		log.Fatal(
+			"DATABASE_URL environment variable is required",
+		)
+	}
+
+	repository, err :=
+		persistence.NewPostgresRepository(
+			ctx,
+			databaseURL,
+		)
+
+	if err != nil {
+
+		log.Fatalf(
+			"failed to initialize PostgreSQL: %v",
+			err,
+		)
+	}
+
+	defer repository.Close()
+
+	log.Println(
+		"PostgreSQL connection established",
+	)
+
+	//
+	// HTTP API.
+	//
 	handler :=
-		expenseapi.NewHandler(
+		expenseapi.NewHandlerWithRepository(
 			processor,
+			repository,
 		)
 
 	mux :=

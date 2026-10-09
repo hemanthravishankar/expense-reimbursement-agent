@@ -80,6 +80,8 @@ type Result struct {
 
 	ClarificationResult *clarification.Result `json:"clarification_result,omitempty"`
 
+	ClarificationAnswers []clarification.Answer `json:"clarification_answers,omitempty"`
+
 	PolicyDecision *policy.Decision `json:"policy_decision,omitempty"`
 
 	FinalStatus string `json:"final_status"`
@@ -90,6 +92,7 @@ type Result struct {
 }
 
 func DefaultConfig() Config {
+
 	return Config{
 		AuditDirectory: "data/audit",
 
@@ -108,7 +111,10 @@ func NewProcessor(
 	config Config,
 ) *Processor {
 
-	config = normalizeConfig(config)
+	config =
+		normalizeConfig(
+			config,
+		)
 
 	documentStore :=
 		storage.NewLocalDocumentStore(
@@ -116,9 +122,11 @@ func NewProcessor(
 		)
 
 	return &Processor{
-		extractor:     extractor,
+		extractor: extractor,
+
 		documentStore: documentStore,
-		config:        config,
+
+		config: config,
 	}
 }
 
@@ -128,9 +136,13 @@ func NewProcessorWithStore(
 	config Config,
 ) *Processor {
 
-	config = normalizeConfig(config)
+	config =
+		normalizeConfig(
+			config,
+		)
 
 	if documentStore == nil {
+
 		documentStore =
 			storage.NewLocalDocumentStore(
 				config.DocumentDirectory,
@@ -138,9 +150,11 @@ func NewProcessorWithStore(
 	}
 
 	return &Processor{
-		extractor:     extractor,
+		extractor: extractor,
+
 		documentStore: documentStore,
-		config:        config,
+
+		config: config,
 	}
 }
 
@@ -152,26 +166,31 @@ func normalizeConfig(
 		DefaultConfig()
 
 	if config.AuditDirectory == "" {
+
 		config.AuditDirectory =
 			defaults.AuditDirectory
 	}
 
 	if config.DocumentDirectory == "" {
+
 		config.DocumentDirectory =
 			defaults.DocumentDirectory
 	}
 
 	if config.PrimaryModel == "" {
+
 		config.PrimaryModel =
 			defaults.PrimaryModel
 	}
 
 	if config.FallbackModel == "" {
+
 		config.FallbackModel =
 			defaults.FallbackModel
 	}
 
 	if len(config.Policy.Limits) == 0 {
+
 		config.Policy =
 			defaults.Policy
 	}
@@ -194,17 +213,18 @@ func (p *Processor) ProcessReceipt(
 
 	//
 	// STEP 1
-	// Validate raw upload.
+	// Validate upload.
 	//
 	if len(rawDocument) == 0 {
-		return nil, fmt.Errorf(
-			"uploaded document is empty",
-		)
+
+		return nil,
+			fmt.Errorf(
+				"uploaded document is empty",
+			)
 	}
 
 	//
-	// Perform only cheap deterministic
-	// operations at this stage.
+	// Cheap deterministic operations first.
 	//
 	receiptHash :=
 		document.CalculateSHA256(
@@ -235,11 +255,11 @@ func (p *Processor) ProcessReceipt(
 
 	//
 	// STEP 2
-	// Exact duplicate detection BEFORE:
+	// Exact duplicate detection before:
 	//
-	// - storing another physical object
-	// - rendering PDFs
-	// - running Qwen
+	// - physical storage
+	// - PDF rendering
+	// - AI inference
 	//
 	exactDuplicate, err :=
 		duplicate.DetectExactHash(
@@ -249,11 +269,6 @@ func (p *Processor) ProcessReceipt(
 
 	if err != nil {
 
-		//
-		// Duplicate lookup failure should not
-		// prevent a legitimate expense from
-		// being processed.
-		//
 		result.Warnings =
 			append(
 				result.Warnings,
@@ -275,8 +290,7 @@ func (p *Processor) ProcessReceipt(
 			true
 
 		//
-		// The duplicate submission attempt
-		// itself must still be audited.
+		// Duplicate attempts are still auditable.
 		//
 		if err :=
 			p.saveAudit(
@@ -284,17 +298,18 @@ func (p *Processor) ProcessReceipt(
 				startedAt,
 			); err != nil {
 
-			return result, err
+			return result,
+				err
 		}
 
-		return result, nil
+		return result,
+			nil
 	}
 
 	//
 	// STEP 3
-	// Store ORIGINAL evidence.
-	//
-	// This happens before any AI processing.
+	// Persist the ORIGINAL uploaded evidence
+	// before AI processing.
 	//
 	storedDocument, err :=
 		p.documentStore.Put(
@@ -308,10 +323,12 @@ func (p *Processor) ProcessReceipt(
 		)
 
 	if err != nil {
-		return nil, fmt.Errorf(
-			"store original expense document: %w",
-			err,
-		)
+
+		return nil,
+			fmt.Errorf(
+				"store original expense document: %w",
+				err,
+			)
 	}
 
 	result.StoredDocument =
@@ -319,13 +336,8 @@ func (p *Processor) ProcessReceipt(
 
 	//
 	// STEP 4
-	// Document normalization.
-	//
-	// JPG/PNG:
-	//   one image page
-	//
-	// PDF:
-	//   rendered into one or more PNG pages
+	// Normalize document into AI-consumable
+	// pages.
 	//
 	doc, err :=
 		document.Process(
@@ -335,10 +347,12 @@ func (p *Processor) ProcessReceipt(
 		)
 
 	if err != nil {
-		return nil, fmt.Errorf(
-			"process uploaded document: %w",
-			err,
-		)
+
+		return nil,
+			fmt.Errorf(
+				"process uploaded document: %w",
+				err,
+			)
 	}
 
 	result.DocumentMIMEType =
@@ -347,19 +361,18 @@ func (p *Processor) ProcessReceipt(
 	result.PageCount =
 		doc.PageCount
 
-	//
-	// Defensive consistency check.
-	//
-	if doc.SHA256 != receiptHash {
-		return nil, fmt.Errorf(
-			"document hash changed during processing",
-		)
+	if doc.SHA256 !=
+		receiptHash {
+
+		return nil,
+			fmt.Errorf(
+				"document hash changed during processing",
+			)
 	}
 
 	//
 	// STEP 5
-	// Primary AI extraction using
-	// Qwen3-VL 4B.
+	// Primary AI extraction.
 	//
 	extraction, err :=
 		p.extractor.ExtractReceipt(
@@ -368,15 +381,17 @@ func (p *Processor) ProcessReceipt(
 		)
 
 	if err != nil {
-		return nil, fmt.Errorf(
-			"primary receipt extraction failed: %w",
-			err,
-		)
+
+		return nil,
+			fmt.Errorf(
+				"primary receipt extraction failed: %w",
+				err,
+			)
 	}
 
 	//
 	// STEP 6
-	// Deterministic normalization and
+	// Deterministic normalization +
 	// validation.
 	//
 	validation.NormalizeReceipt(
@@ -406,8 +421,9 @@ func (p *Processor) ProcessReceipt(
 
 	//
 	// STEP 7
-	// Escalate to larger model when
-	// deterministic validation fails.
+	// Escalate to the larger model if the
+	// first extraction fails deterministic
+	// validation.
 	//
 	if !result.FinalValidation.Valid {
 
@@ -454,23 +470,20 @@ func (p *Processor) ProcessReceipt(
 
 	//
 	// STEP 8
-	// Continue business processing only
-	// when extraction passes deterministic
-	// validation.
+	// Business processing only continues
+	// after extraction passes validation.
 	//
 	if result.FinalValidation.Valid {
 
 		//
 		// Metadata duplicate detection catches
-		// documents that are logically identical
-		// but have different file hashes.
+		// altered representations of the same
+		// logical receipt:
 		//
-		// Examples:
-		//
-		// - resized images
-		// - recompressed images
-		// - screenshots
-		// - JPG converted to PDF
+		// resized image
+		// screenshot
+		// recompressed image
+		// converted PDF
 		//
 		dupResult, dupErr :=
 			duplicate.Detect(
@@ -505,9 +518,8 @@ func (p *Processor) ProcessReceipt(
 				//
 				// Defensive backup.
 				//
-				// Normally an exact duplicate
-				// should already have been caught
-				// before AI.
+				// Exact duplicates normally
+				// never reach this stage.
 				//
 				result.FinalStatus =
 					StatusDuplicateDetected
@@ -537,8 +549,8 @@ func (p *Processor) ProcessReceipt(
 
 					//
 					// STEP 10
-					// Deterministic policy
-					// evaluation.
+					// Deterministic reimbursement
+					// policy evaluation.
 					//
 					decision :=
 						policy.Evaluate(
@@ -558,8 +570,9 @@ func (p *Processor) ProcessReceipt(
 	}
 
 	//
-	// Invalid extraction even after
-	// fallback goes to human review.
+	// If both extraction attempts fail
+	// validation, route the claim for human
+	// review.
 	//
 	if !result.FinalValidation.Valid {
 
@@ -569,7 +582,7 @@ func (p *Processor) ProcessReceipt(
 
 	//
 	// STEP 11
-	// Audit everything.
+	// Technical audit trail.
 	//
 	if err :=
 		p.saveAudit(
@@ -577,10 +590,12 @@ func (p *Processor) ProcessReceipt(
 			startedAt,
 		); err != nil {
 
-		return result, err
+		return result,
+			err
 	}
 
-	return result, nil
+	return result,
+		nil
 }
 
 func (p *Processor) saveAudit(
@@ -644,6 +659,7 @@ func (p *Processor) saveAudit(
 		)
 
 	if err != nil {
+
 		return fmt.Errorf(
 			"save workflow audit record: %w",
 			err,
