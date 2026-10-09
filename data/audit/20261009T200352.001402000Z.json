@@ -1,0 +1,108 @@
+{
+  "run_id": "20261009T200352.001402000Z",
+  "receipt_path": "1069-receipt-resized.jpg",
+  "receipt_sha256": "475d32807d82f6284d70a1c133f9c5d64eae19a92382b77228530717bed2b32f",
+  "document_mime_type": "image/jpeg",
+  "page_count": 1,
+  "started_at": "2026-10-09T20:03:52.001402Z",
+  "completed_at": "2026-10-09T20:04:06.266626Z",
+  "ai_processing_skipped": false,
+  "primary_model": "qwen3-vl:4b-instruct",
+  "fallback_used": false,
+  "initial_extraction": {
+    "document_type": "receipt",
+    "merchant": "River Village Family Restaurant",
+    "expense_date": "2019-08-12",
+    "subtotal": 10.28,
+    "tax_amount": 0.62,
+    "total_amount": 10.9,
+    "currency": "USD",
+    "receipt_number": "7",
+    "payment_method": "",
+    "category_suggestion": "Meals",
+    "line_items": [
+      {
+        "name": "Apple French Toast",
+        "quantity": 1,
+        "amount": 7.99
+      },
+      {
+        "name": "Coffee",
+        "quantity": 1,
+        "amount": 2.29
+      }
+    ],
+    "confidence": 0.98,
+    "warnings": null
+  },
+  "initial_validation": {
+    "valid": true,
+    "line_item_sum": 10.28,
+    "issues": []
+  },
+  "final_extraction": {
+    "document_type": "receipt",
+    "merchant": "River Village Family Restaurant",
+    "expense_date": "2019-08-12",
+    "subtotal": 10.28,
+    "tax_amount": 0.62,
+    "total_amount": 10.9,
+    "currency": "USD",
+    "receipt_number": "7",
+    "payment_method": "",
+    "category_suggestion": "Meals",
+    "line_items": [
+      {
+        "name": "Apple French Toast",
+        "quantity": 1,
+        "amount": 7.99
+      },
+      {
+        "name": "Coffee",
+        "quantity": 1,
+        "amount": 2.29
+      }
+    ],
+    "confidence": 0.98,
+    "warnings": null
+  },
+  "final_validation": {
+    "valid": true,
+    "line_item_sum": 10.28,
+    "issues": []
+  },
+  "employee": {
+    "id": "EMP30025",
+    "name": "Priya Nair",
+    "grade": "B2",
+    "department": "Operations",
+    "location": "Bengaluru"
+  },
+  "duplicate_result": {
+    "is_duplicate": true,
+    "match_type": "METADATA_MATCH",
+    "confidence": 1,
+    "matched_run_id": "20261009T195941.105765000Z",
+    "reason": "Receipt closely matches a previously processed expense based on merchant, date, amount, and receipt metadata."
+  },
+  "clarification_result": {
+    "required": true,
+    "questions": [
+      {
+        "code": "CONFIRM_POSSIBLE_DUPLICATE",
+        "field": "duplicate",
+        "question": "This expense closely matches a previously submitted receipt. Is this a separate transaction? If yes, please explain why it is different.",
+        "reason": "A previous claim has matching receipt metadata such as merchant, date, amount, or receipt number.",
+        "required": true
+      }
+    ]
+  },
+  "final_status": "CLARIFICATION_REQUIRED",
+  "stored_document": {
+    "key": "47/475d32807d82f6284d70a1c133f9c5d64eae19a92382b77228530717bed2b32f.jpg",
+    "original_name": "1069-receipt-resized.jpg",
+    "mime_type": "image/jpeg",
+    "sha256": "475d32807d82f6284d70a1c133f9c5d64eae19a92382b77228530717bed2b32f",
+    "size": 238375
+  }
+}
