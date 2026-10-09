@@ -2,17 +2,29 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
 	"os"
+	"time"
 
 	"github.com/hemanth-shankar/expense-agent/internal/ai"
+	"github.com/hemanth-shankar/expense-agent/internal/audit"
 	"github.com/hemanth-shankar/expense-agent/internal/models"
 	"github.com/hemanth-shankar/expense-agent/internal/validation"
 )
 
+const (
+	primaryModel  = "qwen3-vl:4b-instruct"
+	fallbackModel = "qwen3-vl:8b-instruct"
+)
+
 func main() {
+
+	startedAt := time.Now().UTC()
+
 	if len(os.Args) != 2 {
 		log.Fatalf(
 			"usage: go run ./cmd/server <receipt-image>",
@@ -31,20 +43,38 @@ func main() {
 		)
 	}
 
-	fmt.Println("Analyzing receipt...")
-	fmt.Println("File:", imagePath)
+	receiptHash :=
+		calculateSHA256(imageData)
 
-	client := ai.NewOllamaClient()
+	runID :=
+		generateRunID()
 
-	//
-	// STEP 1:
-	// Primary extraction using Qwen3-VL 4B.
-	//
+	fmt.Println(
+		"Analyzing receipt...",
+	)
+
+	fmt.Println(
+		"File:",
+		imagePath,
+	)
+
+	fmt.Println(
+		"Run ID:",
+		runID,
+	)
+
+	client :=
+		ai.NewOllamaClient()
+
 	fmt.Println()
+
 	fmt.Println(
 		"Running primary extraction with Qwen3-VL 4B...",
 	)
 
+	//
+	// PRIMARY EXTRACTION
+	//
 	extraction, err :=
 		client.ExtractReceipt(
 			context.Background(),
@@ -55,37 +85,37 @@ func main() {
 		log.Fatal(err)
 	}
 
-	//
-	// STEP 2:
-	// Normalize values produced by AI.
-	//
 	validation.NormalizeReceipt(
 		extraction,
 	)
 
 	//
-	// STEP 3:
-	// Deterministically validate the extraction.
+	// Preserve initial extraction for audit.
 	//
-	validationResult :=
+	initialExtraction :=
+		cloneExtraction(extraction)
+
+	initialValidation :=
 		validation.ValidateReceipt(
 			extraction,
 		)
 
-	//
-	// Keep track of which model produced
-	// the final accepted extraction.
-	//
-	finalModel := "qwen3-vl:4b-instruct"
+	validationResult :=
+		initialValidation
+
+	finalModel :=
+		primaryModel
+
+	fallbackUsed :=
+		false
 
 	//
-	// STEP 4:
-	// If primary extraction fails validation,
-	// escalate to Qwen3-VL 8B.
+	// FALLBACK MODEL
 	//
 	if !validationResult.Valid {
 
 		fmt.Println()
+
 		fmt.Println(
 			"Primary extraction failed validation.",
 		)
@@ -95,6 +125,7 @@ func main() {
 		)
 
 		fmt.Println()
+
 		fmt.Println(
 			"Escalating to Qwen3-VL 8B for fresh extraction...",
 		)
@@ -114,25 +145,18 @@ func main() {
 
 		} else {
 
-			//
-			// Normalize the 8B result.
-			//
+			fallbackUsed =
+				true
+
 			validation.NormalizeReceipt(
 				fallbackExtraction,
 			)
 
-			//
-			// Validate the 8B result.
-			//
 			fallbackValidation :=
 				validation.ValidateReceipt(
 					fallbackExtraction,
 				)
 
-			//
-			// Replace the current result with
-			// the fallback result.
-			//
 			extraction =
 				fallbackExtraction
 
@@ -140,31 +164,30 @@ func main() {
 				fallbackValidation
 
 			finalModel =
-				"qwen3-vl:8b-instruct"
+				fallbackModel
 		}
 	}
 
+	finalStatus :=
+		"HUMAN_REVIEW_REQUIRED"
+
+	if validationResult.Valid {
+		finalStatus =
+			"VALIDATED"
+	}
+
 	//
-	// STEP 5:
-	// Print final extraction.
+	// PRINT FINAL RESULT
 	//
 	printFinalExtraction(
 		extraction,
 		finalModel,
 	)
 
-	//
-	// STEP 6:
-	// Print final validation result.
-	//
 	printFinalValidation(
 		validationResult,
 	)
 
-	//
-	// STEP 7:
-	// Give a human-readable final status.
-	//
 	fmt.Println()
 
 	if validationResult.Valid {
@@ -187,6 +210,111 @@ func main() {
 			"The receipt still contains validation errors after AI escalation.",
 		)
 	}
+
+	//
+	// AUDIT TRAIL
+	//
+	auditRecord :=
+		audit.Record{
+			RunID:         runID,
+			ReceiptPath:   imagePath,
+			ReceiptSHA256: receiptHash,
+
+			StartedAt: startedAt,
+
+			CompletedAt: time.Now().UTC(),
+
+			PrimaryModel: primaryModel,
+
+			FallbackUsed: fallbackUsed,
+
+			InitialExtraction: initialExtraction,
+
+			InitialValidation: initialValidation,
+
+			FinalExtraction: cloneExtraction(
+				extraction,
+			),
+
+			FinalValidation: validationResult,
+
+			FinalStatus: finalStatus,
+		}
+
+	if fallbackUsed {
+		auditRecord.FallbackModel =
+			fallbackModel
+	}
+
+	auditPath, err :=
+		audit.Save(
+			"data/audit",
+			auditRecord,
+		)
+
+	if err != nil {
+
+		log.Printf(
+			"failed to save audit record: %v",
+			err,
+		)
+
+	} else {
+
+		fmt.Println()
+
+		fmt.Println(
+			"Audit record saved:",
+			auditPath,
+		)
+	}
+}
+
+func calculateSHA256(
+	data []byte,
+) string {
+
+	hash :=
+		sha256.Sum256(data)
+
+	return hex.EncodeToString(
+		hash[:],
+	)
+}
+
+func generateRunID() string {
+
+	return time.Now().
+		UTC().
+		Format(
+			"20060102T150405.000000000Z",
+		)
+}
+
+func cloneExtraction(
+	source *models.ReceiptExtraction,
+) *models.ReceiptExtraction {
+
+	if source == nil {
+		return nil
+	}
+
+	copyValue :=
+		*source
+
+	copyValue.LineItems =
+		append(
+			[]models.ReceiptLineItem(nil),
+			source.LineItems...,
+		)
+
+	copyValue.Warnings =
+		append(
+			[]string(nil),
+			source.Warnings...,
+		)
+
+	return &copyValue
 }
 
 func printFinalExtraction(
@@ -206,6 +334,7 @@ func printFinalExtraction(
 	}
 
 	fmt.Println()
+
 	fmt.Println(
 		"Final Receipt Extraction:",
 	)
@@ -236,6 +365,7 @@ func printFinalValidation(
 	}
 
 	fmt.Println()
+
 	fmt.Println(
 		"Final Validation Result:",
 	)
