@@ -17,6 +17,8 @@ import (
 
 	"github.com/hemanth-shankar/expense-agent/internal/claims"
 
+	"github.com/hemanth-shankar/expense-agent/internal/finance"
+
 	"github.com/hemanth-shankar/expense-agent/internal/models"
 
 	"github.com/hemanth-shankar/expense-agent/internal/persistence"
@@ -24,6 +26,8 @@ import (
 	"github.com/hemanth-shankar/expense-agent/internal/policy"
 
 	"github.com/hemanth-shankar/expense-agent/internal/reports"
+
+	"github.com/hemanth-shankar/expense-agent/internal/storage"
 
 	"github.com/hemanth-shankar/expense-agent/internal/workflow"
 )
@@ -107,9 +111,13 @@ type Handler struct {
 
 	clarificationService *claims.Service
 
+	financeService *finance.Service
+
 	reportRepository ExpenseReportRepository
 
 	reportService *reports.Service
+
+	documentStore storage.DocumentStore
 }
 
 type errorResponse struct {
@@ -125,6 +133,10 @@ func NewHandler(
 	return &Handler{
 
 		processor: processor,
+
+		documentStore: storage.NewLocalDocumentStore(
+			workflow.DefaultConfig().DocumentDirectory,
+		),
 	}
 
 }
@@ -154,6 +166,13 @@ func NewHandlerWithRepository(
 			policy.DemoUSDPolicy(),
 		),
 
+		financeService: finance.NewService(
+
+			repository,
+
+			policy.DemoUSDPolicy(),
+		),
+
 		reportRepository: repository,
 
 		reportService: reports.NewService(
@@ -161,6 +180,10 @@ func NewHandlerWithRepository(
 			processor,
 
 			repository,
+		),
+
+		documentStore: storage.NewLocalDocumentStore(
+			workflow.DefaultConfig().DocumentDirectory,
 		),
 	}
 
@@ -202,6 +225,13 @@ func (h *Handler) RegisterRoutes(
 
 	mux.HandleFunc(
 
+		"GET /api/v1/claims/{claimID}/document",
+
+		h.getClaimDocument,
+	)
+
+	mux.HandleFunc(
+
 		"POST /api/v1/claims/{claimID}/clarifications",
 
 		h.resolveClarification,
@@ -233,6 +263,13 @@ func (h *Handler) RegisterRoutes(
 		"GET /api/v1/admin/expense-reports",
 
 		h.listAdminExpenseReports,
+	)
+
+	mux.HandleFunc(
+
+		"POST /api/v1/admin/claims/{claimID}/review",
+
+		h.reviewClaim,
 	)
 
 }
