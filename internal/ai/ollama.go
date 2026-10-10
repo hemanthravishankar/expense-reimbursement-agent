@@ -303,6 +303,25 @@ Financial-field rules:
 Do not invent charges merely to make the arithmetic balance.
 Only populate a charge when it is visible on the document.
 
+Transportation / ride-receipt rules:
+
+- "Base Fare" alone is NOT necessarily the subtotal.
+- Fare components such as base fare, time, distance, mileage, and similar
+  ride-service components belong to subtotal.
+- Explicit fee rows such as Airport Fee, Booking Fee, Convenience Fee,
+  Platform Fee, Parking Fee, Toll, or Surcharge belong in other_fees.
+- Explicit tax-only rows belong in tax_amount.
+- If a single visible row combines tax and fees, for example
+  "Taxes & Other Fees", and the document does not show a reliable split,
+  place the full combined amount in other_fees and do not invent a tax split.
+- line_items must contain only the components represented by subtotal.
+- Do not include tax, service charge, tip, discount, or other fees in
+  line_items when those amounts are represented separately.
+- If no subtotal is printed but the visible fare components make it
+  unambiguous, calculate subtotal from those visible fare components.
+- Before returning a transportation receipt, verify:
+  subtotal + tax + service charge + tip + other fees - discount = total.
+
 
 For multi-page documents:
 
@@ -443,6 +462,25 @@ Financial-field rules:
 
 Do not invent charges merely to make the arithmetic balance.
 Only populate a charge when it is visible on the document.
+
+Transportation / ride-receipt rules:
+
+- "Base Fare" alone is NOT necessarily the subtotal.
+- Fare components such as base fare, time, distance, mileage, and similar
+  ride-service components belong to subtotal.
+- Explicit fee rows such as Airport Fee, Booking Fee, Convenience Fee,
+  Platform Fee, Parking Fee, Toll, or Surcharge belong in other_fees.
+- Explicit tax-only rows belong in tax_amount.
+- If a single visible row combines tax and fees, for example
+  "Taxes & Other Fees", and the document does not show a reliable split,
+  place the full combined amount in other_fees and do not invent a tax split.
+- line_items must contain only the components represented by subtotal.
+- Do not include tax, service charge, tip, discount, or other fees in
+  line_items when those amounts are represented separately.
+- If no subtotal is printed but the visible fare components make it
+  unambiguous, calculate subtotal from those visible fare components.
+- Before returning a transportation receipt, verify:
+  subtotal + tax + service charge + tip + other fees - discount = total.
 
 Allowed categories:
 

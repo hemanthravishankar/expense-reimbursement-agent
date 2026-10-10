@@ -1,1 +1,21 @@
 .env
+
+# Local environment
+.env
+
+# Frontend dependencies/build
+web/node_modules/
+web/dist/
+
+# Runtime evidence / audit data
+data/audit/
+data/documents/
+
+# macOS
+.DS_Store
+
+# Locally generated duplicate/adversarial test receipts
+data/receipts/report-meal-adversarial*.jpg
+data/receipts/report-meal-modified.jpg
+data/receipts/report-meal-v2.png
+data/receipts/report-meal-v3.png

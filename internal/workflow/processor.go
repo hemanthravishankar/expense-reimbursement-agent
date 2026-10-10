@@ -17,9 +17,13 @@ import (
 )
 
 const (
-	StatusHumanReviewRequired   = "HUMAN_REVIEW_REQUIRED"
-	StatusDuplicateDetected     = "DUPLICATE_DETECTED"
+	StatusHumanReviewRequired = "HUMAN_REVIEW_REQUIRED"
+
+	StatusDuplicateDetected = "DUPLICATE_DETECTED"
+
 	StatusClarificationRequired = "CLARIFICATION_REQUIRED"
+
+	StatusManualReview = "MANUAL_REVIEW"
 )
 
 type ReceiptExtractor interface {
@@ -35,28 +39,27 @@ type ReceiptExtractor interface {
 }
 
 type Config struct {
-	AuditDirectory    string
+	AuditDirectory string
+
 	DocumentDirectory string
 
-	PrimaryModel  string
+	PrimaryModel string
+
 	FallbackModel string
 
 	Policy policy.Policy
 }
 
-type Processor struct {
-	extractor     ReceiptExtractor
-	documentStore storage.DocumentStore
-	config        Config
-}
-
 type Result struct {
-	RunID         string `json:"run_id"`
-	ReceiptPath   string `json:"receipt_path"`
+	RunID string `json:"run_id"`
+
+	ReceiptPath string `json:"receipt_path"`
+
 	ReceiptSHA256 string `json:"receipt_sha256"`
 
 	DocumentMIMEType string `json:"document_mime_type"`
-	PageCount        int    `json:"page_count"`
+
+	PageCount int `json:"page_count"`
 
 	StoredDocument *storage.StoredDocument `json:"stored_document,omitempty"`
 
@@ -72,7 +75,7 @@ type Result struct {
 
 	FinalValidation validation.ReceiptValidationResult `json:"final_validation"`
 
-	FinalModel string `json:"final_model,omitempty"`
+	FinalModel string `json:"final_model"`
 
 	FallbackUsed bool `json:"fallback_used"`
 
@@ -86,13 +89,20 @@ type Result struct {
 
 	FinalStatus string `json:"final_status"`
 
-	AuditPath string `json:"audit_path"`
+	AuditPath string `json:"audit_path,omitempty"`
 
-	Warnings []string `json:"warnings,omitempty"`
+	Warnings []string `json:"warnings"`
+}
+
+type Processor struct {
+	extractor ReceiptExtractor
+
+	documentStore storage.DocumentStore
+
+	config Config
 }
 
 func DefaultConfig() Config {
-
 	return Config{
 		AuditDirectory: "data/audit",
 
@@ -142,7 +152,6 @@ func NewProcessorWithStore(
 		)
 
 	if documentStore == nil {
-
 		documentStore =
 			storage.NewLocalDocumentStore(
 				config.DocumentDirectory,
@@ -166,30 +175,28 @@ func normalizeConfig(
 		DefaultConfig()
 
 	if config.AuditDirectory == "" {
-
 		config.AuditDirectory =
 			defaults.AuditDirectory
 	}
 
 	if config.DocumentDirectory == "" {
-
 		config.DocumentDirectory =
 			defaults.DocumentDirectory
 	}
 
 	if config.PrimaryModel == "" {
-
 		config.PrimaryModel =
 			defaults.PrimaryModel
 	}
 
 	if config.FallbackModel == "" {
-
 		config.FallbackModel =
 			defaults.FallbackModel
 	}
 
-	if len(config.Policy.Limits) == 0 {
+	if len(
+		config.Policy.Limits,
+	) == 0 {
 
 		config.Policy =
 			defaults.Policy
@@ -206,25 +213,33 @@ func (p *Processor) ProcessReceipt(
 ) (*Result, error) {
 
 	startedAt :=
-		time.Now().UTC()
+		time.Now().
+			UTC()
 
-	runID :=
-		generateRunID()
-
-	//
-	// STEP 1
-	// Validate upload.
-	//
 	if len(rawDocument) == 0 {
-
 		return nil,
 			fmt.Errorf(
-				"uploaded document is empty",
+				"receipt document is empty",
+			)
+	}
+
+	if p.extractor == nil {
+		return nil,
+			fmt.Errorf(
+				"receipt extractor is not configured",
+			)
+	}
+
+	if p.documentStore == nil {
+		return nil,
+			fmt.Errorf(
+				"document store is not configured",
 			)
 	}
 
 	//
-	// Cheap deterministic operations first.
+	// Calculate cheap deterministic properties
+	// before doing any AI work.
 	//
 	receiptHash :=
 		document.CalculateSHA256(
@@ -238,7 +253,7 @@ func (p *Processor) ProcessReceipt(
 
 	result :=
 		&Result{
-			RunID: runID,
+			RunID: generateRunID(),
 
 			ReceiptPath: receiptPath,
 
@@ -253,35 +268,49 @@ func (p *Processor) ProcessReceipt(
 			Warnings: []string{},
 		}
 
+	// =====================================================
+	// STEP 1
+	// PRE-AI EXACT DUPLICATE CHECK
+	// =====================================================
 	//
-	// STEP 2
-	// Exact duplicate detection before:
+	// IMPORTANT:
 	//
-	// - physical storage
-	// - PDF rendering
-	// - AI inference
+	// Duplicate checks are employee-aware.
+	//
+	// Same employee:
+	//     exact hash -> true duplicate -> stop before AI
+	//
+	// Different employee:
+	//     exact hash -> Admin risk signal
+	//     processing continues
 	//
 	exactDuplicate, err :=
-		duplicate.DetectExactHash(
+		duplicate.DetectExactHashForEmployee(
 			p.config.AuditDirectory,
 			receiptHash,
+			employee.ID,
 		)
 
 	if err != nil {
-
-		result.Warnings =
-			append(
-				result.Warnings,
-				fmt.Sprintf(
-					"exact duplicate pre-check failed: %v",
-					err,
-				),
+		return nil,
+			fmt.Errorf(
+				"detect exact duplicate: %w",
+				err,
 			)
+	}
 
-	} else if exactDuplicate.IsDuplicate {
+	if exactDuplicate.MatchType !=
+		duplicate.MatchNone {
 
 		result.DuplicateResult =
 			&exactDuplicate
+	}
+
+	//
+	// Only same-employee exact duplicates
+	// are blocked here.
+	//
+	if exactDuplicate.IsDuplicate {
 
 		result.FinalStatus =
 			StatusDuplicateDetected
@@ -289,28 +318,23 @@ func (p *Processor) ProcessReceipt(
 		result.AIProcessingSkipped =
 			true
 
-		//
-		// Duplicate attempts are still auditable.
-		//
 		if err :=
 			p.saveAudit(
 				result,
 				startedAt,
 			); err != nil {
 
-			return result,
-				err
+			return nil, err
 		}
 
-		return result,
-			nil
+		return result, nil
 	}
 
-	//
-	// STEP 3
-	// Persist the ORIGINAL uploaded evidence
-	// before AI processing.
-	//
+	// =====================================================
+	// STEP 2
+	// STORE ORIGINAL DOCUMENT
+	// =====================================================
+
 	storedDocument, err :=
 		p.documentStore.Put(
 			ctx,
@@ -323,10 +347,9 @@ func (p *Processor) ProcessReceipt(
 		)
 
 	if err != nil {
-
 		return nil,
 			fmt.Errorf(
-				"store original expense document: %w",
+				"store original receipt document: %w",
 				err,
 			)
 	}
@@ -334,10 +357,16 @@ func (p *Processor) ProcessReceipt(
 	result.StoredDocument =
 		storedDocument
 
+	// =====================================================
+	// STEP 3
+	// DOCUMENT NORMALIZATION
+	// =====================================================
 	//
-	// STEP 4
-	// Normalize document into AI-consumable
-	// pages.
+	// JPG / PNG:
+	//     one image page
+	//
+	// PDF:
+	//     render into page images
 	//
 	doc, err :=
 		document.Process(
@@ -347,20 +376,16 @@ func (p *Processor) ProcessReceipt(
 		)
 
 	if err != nil {
-
 		return nil,
 			fmt.Errorf(
-				"process uploaded document: %w",
+				"process receipt document: %w",
 				err,
 			)
 	}
 
-	result.DocumentMIMEType =
-		doc.MIMEType
-
-	result.PageCount =
-		doc.PageCount
-
+	//
+	// Defensive consistency check.
+	//
 	if doc.SHA256 !=
 		receiptHash {
 
@@ -370,18 +395,24 @@ func (p *Processor) ProcessReceipt(
 			)
 	}
 
-	//
-	// STEP 5
-	// Primary AI extraction.
-	//
-	extraction, err :=
+	result.DocumentMIMEType =
+		doc.MIMEType
+
+	result.PageCount =
+		doc.PageCount
+
+	// =====================================================
+	// STEP 4
+	// PRIMARY VISION MODEL
+	// =====================================================
+
+	initialExtraction, err :=
 		p.extractor.ExtractReceipt(
 			ctx,
 			doc.Pages,
 		)
 
 	if err != nil {
-
 		return nil,
 			fmt.Errorf(
 				"primary receipt extraction failed: %w",
@@ -389,49 +420,55 @@ func (p *Processor) ProcessReceipt(
 			)
 	}
 
-	//
-	// STEP 6
-	// Deterministic normalization +
-	// validation.
-	//
 	validation.NormalizeReceipt(
-		extraction,
+		initialExtraction,
 	)
+
+	initialValidation :=
+		validation.ValidateReceipt(
+			initialExtraction,
+		)
 
 	result.InitialExtraction =
 		cloneExtraction(
-			extraction,
+			initialExtraction,
 		)
 
 	result.InitialValidation =
-		validation.ValidateReceipt(
-			extraction,
-		)
+		initialValidation
 
 	result.FinalExtraction =
 		cloneExtraction(
-			extraction,
+			initialExtraction,
 		)
 
 	result.FinalValidation =
-		result.InitialValidation
+		initialValidation
 
 	result.FinalModel =
 		p.config.PrimaryModel
 
+	// =====================================================
+	// STEP 5
+	// MODEL ESCALATION
+	// =====================================================
 	//
-	// STEP 7
-	// Escalate to the larger model if the
-	// first extraction fails deterministic
-	// validation.
+	// The larger model is used only when
+	// deterministic validation rejects the
+	// primary extraction.
 	//
-	if !result.FinalValidation.Valid {
+	if !initialValidation.Valid {
 
-		fallbackExtraction, fallbackErr :=
-			p.extractor.ExtractReceiptWithFallback(
-				ctx,
-				doc.Pages,
-			)
+		result.FallbackUsed =
+			true
+
+		fallbackExtraction,
+			fallbackErr :=
+			p.extractor.
+				ExtractReceiptWithFallback(
+					ctx,
+					doc.Pages,
+				)
 
 		if fallbackErr != nil {
 
@@ -446,12 +483,14 @@ func (p *Processor) ProcessReceipt(
 
 		} else {
 
-			result.FallbackUsed =
-				true
-
 			validation.NormalizeReceipt(
 				fallbackExtraction,
 			)
+
+			fallbackValidation :=
+				validation.ValidateReceipt(
+					fallbackExtraction,
+				)
 
 			result.FinalExtraction =
 				cloneExtraction(
@@ -459,143 +498,203 @@ func (p *Processor) ProcessReceipt(
 				)
 
 			result.FinalValidation =
-				validation.ValidateReceipt(
-					fallbackExtraction,
-				)
+				fallbackValidation
 
 			result.FinalModel =
 				p.config.FallbackModel
 		}
 	}
 
-	//
-	// STEP 8
-	// Business processing only continues
-	// after extraction passes validation.
-	//
-	if result.FinalValidation.Valid {
+	// =====================================================
+	// STEP 6
+	// INVALID EVEN AFTER FALLBACK
+	// =====================================================
 
-		//
-		// Metadata duplicate detection catches
-		// altered representations of the same
-		// logical receipt:
-		//
-		// resized image
-		// screenshot
-		// recompressed image
-		// converted PDF
-		//
-		dupResult, dupErr :=
-			duplicate.Detect(
-				p.config.AuditDirectory,
-				receiptHash,
-				result.FinalExtraction,
-			)
-
-		if dupErr != nil {
-
-			result.Warnings =
-				append(
-					result.Warnings,
-					fmt.Sprintf(
-						"metadata duplicate detection failed: %v",
-						dupErr,
-					),
-				)
-
-			result.FinalStatus =
-				StatusHumanReviewRequired
-
-		} else {
-
-			result.DuplicateResult =
-				&dupResult
-
-			if dupResult.IsDuplicate &&
-				dupResult.MatchType ==
-					duplicate.MatchExact {
-
-				//
-				// Defensive backup.
-				//
-				// Exact duplicates normally
-				// never reach this stage.
-				//
-				result.FinalStatus =
-					StatusDuplicateDetected
-
-			} else {
-
-				//
-				// STEP 9
-				// Clarification engine.
-				//
-				clarify :=
-					clarification.Evaluate(
-						result.FinalExtraction,
-						result.FinalValidation,
-						result.DuplicateResult,
-					)
-
-				result.ClarificationResult =
-					&clarify
-
-				if clarify.Required {
-
-					result.FinalStatus =
-						StatusClarificationRequired
-
-				} else {
-
-					//
-					// STEP 10
-					// Deterministic reimbursement
-					// policy evaluation.
-					//
-					decision :=
-						policy.Evaluate(
-							result.FinalExtraction,
-							employee,
-							p.config.Policy,
-						)
-
-					result.PolicyDecision =
-						&decision
-
-					result.FinalStatus =
-						decision.Status
-				}
-			}
-		}
-	}
-
-	//
-	// If both extraction attempts fail
-	// validation, route the claim for human
-	// review.
-	//
-	if !result.FinalValidation.Valid {
+	if result.FinalExtraction == nil ||
+		!result.FinalValidation.Valid {
 
 		result.FinalStatus =
 			StatusHumanReviewRequired
+
+		if err :=
+			p.saveAudit(
+				result,
+				startedAt,
+			); err != nil {
+
+			return nil, err
+		}
+
+		return result, nil
+	}
+
+	// =====================================================
+	// STEP 7
+	// EMPLOYEE-AWARE METADATA DUPLICATE CHECK
+	// =====================================================
+	//
+	// Same employee:
+	//
+	//     metadata match
+	//         -> clarification required
+	//
+	// Different employee:
+	//
+	//     exact / metadata match
+	//         -> RequiresAdminReview = true
+	//         -> MANUAL_REVIEW
+	//         -> no automatic reimbursement
+	//
+	dupResult, err :=
+		duplicate.DetectForEmployee(
+			p.config.AuditDirectory,
+			receiptHash,
+			result.FinalExtraction,
+			employee.ID,
+		)
+
+	if err != nil {
+		return nil,
+			fmt.Errorf(
+				"detect receipt duplicate: %w",
+				err,
+			)
+	}
+
+	result.DuplicateResult =
+		&dupResult
+
+	//
+	// Defensive backup:
+	//
+	// Normally exact same-employee duplicates
+	// were already caught before AI.
+	//
+	if dupResult.IsDuplicate &&
+		dupResult.MatchType ==
+			duplicate.MatchExact {
+
+		result.FinalStatus =
+			StatusDuplicateDetected
+
+		if err :=
+			p.saveAudit(
+				result,
+				startedAt,
+			); err != nil {
+
+			return nil, err
+		}
+
+		return result, nil
 	}
 
 	//
-	// STEP 11
-	// Technical audit trail.
+	// Cross-employee receipt reuse is not presented to
+	// the employee as "you already submitted this" because
+	// the historical claim belongs to another employee.
 	//
+	// However, RequiresAdminReview is a reimbursement gate,
+	// not merely an informational flag. Finance/Admin must
+	// review the claim before any policy reimbursement can
+	// be authorized.
+	//
+	if dupResult.RequiresAdminReview {
+
+		result.PolicyDecision =
+			nil
+
+		result.FinalStatus =
+			StatusManualReview
+
+		if err :=
+			p.saveAudit(
+				result,
+				startedAt,
+			); err != nil {
+
+			return nil, err
+		}
+
+		return result, nil
+	}
+
+	// =====================================================
+	// STEP 8
+	// CLARIFICATION ENGINE
+	// =====================================================
+	//
+	// Cross-employee risk matches have:
+	//
+	//     IsDuplicate = false
+	//
+	// so they will NOT incorrectly trigger
+	// employee duplicate clarification.
+	//
+	clarify :=
+		clarification.Evaluate(
+			result.FinalExtraction,
+			result.FinalValidation,
+			result.DuplicateResult,
+		)
+
+	result.ClarificationResult =
+		&clarify
+
+	if clarify.Required {
+
+		result.FinalStatus =
+			StatusClarificationRequired
+
+		if err :=
+			p.saveAudit(
+				result,
+				startedAt,
+			); err != nil {
+
+			return nil, err
+		}
+
+		return result, nil
+	}
+
+	// =====================================================
+	// STEP 9
+	// DETERMINISTIC POLICY ENGINE
+	// =====================================================
+	//
+	// The LLM understands the receipt.
+	//
+	// Go code decides reimbursement.
+	//
+	decision :=
+		policy.Evaluate(
+			result.FinalExtraction,
+			employee,
+			p.config.Policy,
+		)
+
+	result.PolicyDecision =
+		&decision
+
+	result.FinalStatus =
+		decision.Status
+
+	// =====================================================
+	// STEP 10
+	// TECHNICAL AUDIT
+	// =====================================================
+
 	if err :=
 		p.saveAudit(
 			result,
 			startedAt,
 		); err != nil {
 
-		return result,
-			err
+		return nil, err
 	}
 
-	return result,
-		nil
+	return result, nil
 }
 
 func (p *Processor) saveAudit(
@@ -619,7 +718,8 @@ func (p *Processor) saveAudit(
 
 			StartedAt: startedAt,
 
-			CompletedAt: time.Now().UTC(),
+			CompletedAt: time.Now().
+				UTC(),
 
 			AIProcessingSkipped: result.AIProcessingSkipped,
 
@@ -647,7 +747,6 @@ func (p *Processor) saveAudit(
 		}
 
 	if result.FallbackUsed {
-
 		record.FallbackModel =
 			p.config.FallbackModel
 	}
@@ -659,7 +758,6 @@ func (p *Processor) saveAudit(
 		)
 
 	if err != nil {
-
 		return fmt.Errorf(
 			"save workflow audit record: %w",
 			err,
@@ -673,7 +771,6 @@ func (p *Processor) saveAudit(
 }
 
 func generateRunID() string {
-
 	return time.Now().
 		UTC().
 		Format(
@@ -682,27 +779,27 @@ func generateRunID() string {
 }
 
 func cloneExtraction(
-	source *models.ReceiptExtraction,
+	extraction *models.ReceiptExtraction,
 ) *models.ReceiptExtraction {
 
-	if source == nil {
+	if extraction == nil {
 		return nil
 	}
 
-	copyValue :=
-		*source
+	cloned :=
+		*extraction
 
-	copyValue.LineItems =
+	cloned.LineItems =
 		append(
 			[]models.ReceiptLineItem(nil),
-			source.LineItems...,
+			extraction.LineItems...,
 		)
 
-	copyValue.Warnings =
+	cloned.Warnings =
 		append(
 			[]string(nil),
-			source.Warnings...,
+			extraction.Warnings...,
 		)
 
-	return &copyValue
+	return &cloned
 }

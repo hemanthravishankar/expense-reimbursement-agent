@@ -109,7 +109,10 @@ func Evaluate(
 
 					Field: "duplicate",
 
-					Question: "This expense closely matches a previously submitted receipt. Is this a separate transaction? If yes, please explain why it is different.",
+					Question: "This expense closely matches a receipt you previously submitted. " +
+						"Is this a separate expense from the previously submitted receipt? " +
+						"Answer YES only if this is a genuinely separate transaction and explain why it is different. " +
+						"Answer NO if this is the same expense, a re-upload, resized image, edited image, or another copy of the same receipt.",
 
 					Reason: "A previous claim has matching receipt metadata such as merchant, date, amount, or receipt number.",
 

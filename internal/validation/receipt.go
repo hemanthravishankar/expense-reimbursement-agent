@@ -80,6 +80,468 @@ func NormalizeReceipt(
 				receipt.LineItems[i].Name,
 			)
 	}
+
+	reconcileTransportationCharges(
+		receipt,
+	)
+}
+
+// reconcileTransportationCharges applies a conservative deterministic
+// correction for transportation receipts where the vision model extracts
+// every fare/fee row as a line item but incorrectly uses only "Base Fare"
+// as the subtotal.
+//
+// The reconciliation is intentionally narrow:
+//
+//   - it only runs for Transportation expenses
+//   - it does nothing when the current extraction already validates
+//   - it only uses amounts already present in visible extracted line items
+//   - it only commits the correction when the reconstructed arithmetic
+//     exactly matches the receipt total within monetary tolerance
+//
+// Example:
+//
+//	Base Fare                 14.50
+//	Time                       3.20
+//	Distance                   4.80
+//	Airport Fee                2.00
+//	Taxes & Other Fees         1.50
+//	Total                     26.00
+//
+// becomes:
+//
+//	subtotal    = 22.50
+//	other_fees  = 3.50
+//	total       = 26.00
+//
+// and only Base Fare, Time, and Distance remain subtotal line items.
+func reconcileTransportationCharges(
+	receipt *models.ReceiptExtraction,
+) {
+	if receipt == nil {
+		return
+	}
+
+	if !strings.EqualFold(
+		strings.TrimSpace(
+			receipt.CategorySuggestion,
+		),
+		"Transportation",
+	) {
+		return
+	}
+
+	if len(receipt.LineItems) == 0 ||
+		receipt.TotalAmount <= 0 {
+
+		return
+	}
+
+	if currentBreakdownIsConsistent(
+		receipt,
+	) {
+		return
+	}
+
+	var (
+		subtotal      float64
+		taxAmount     float64
+		serviceCharge float64
+		tipAmount     float64
+		discount      float64
+		otherFees     float64
+
+		classifiedCharge bool
+	)
+
+	baseItems :=
+		make(
+			[]models.ReceiptLineItem,
+			0,
+			len(receipt.LineItems),
+		)
+
+	for _, item := range receipt.LineItems {
+
+		name :=
+			normalizeLineItemName(
+				item.Name,
+			)
+
+		amount :=
+			roundMoney(
+				item.Amount,
+			)
+
+		switch {
+
+		case isCombinedTaxAndFeeLine(
+			name,
+		):
+
+			otherFees +=
+				amount
+
+			classifiedCharge =
+				true
+
+		case isServiceChargeLine(
+			name,
+		):
+
+			serviceCharge +=
+				amount
+
+			classifiedCharge =
+				true
+
+		case isTipLine(
+			name,
+		):
+
+			tipAmount +=
+				amount
+
+			classifiedCharge =
+				true
+
+		case isDiscountLine(
+			name,
+		):
+
+			discount +=
+				math.Abs(
+					amount,
+				)
+
+			classifiedCharge =
+				true
+
+		case isTaxLine(
+			name,
+		):
+
+			taxAmount +=
+				amount
+
+			classifiedCharge =
+				true
+
+		case isTransportationFeeLine(
+			name,
+		):
+
+			otherFees +=
+				amount
+
+			classifiedCharge =
+				true
+
+		default:
+
+			subtotal +=
+				amount
+
+			baseItems =
+				append(
+					baseItems,
+					item,
+				)
+		}
+	}
+
+	if !classifiedCharge ||
+		subtotal <= 0 {
+
+		return
+	}
+
+	subtotal =
+		roundMoney(
+			subtotal,
+		)
+
+	taxAmount =
+		roundMoney(
+			taxAmount,
+		)
+
+	serviceCharge =
+		roundMoney(
+			serviceCharge,
+		)
+
+	tipAmount =
+		roundMoney(
+			tipAmount,
+		)
+
+	discount =
+		roundMoney(
+			discount,
+		)
+
+	otherFees =
+		roundMoney(
+			otherFees,
+		)
+
+	expectedTotal :=
+		roundMoney(
+			subtotal +
+				taxAmount +
+				serviceCharge +
+				tipAmount +
+				otherFees -
+				discount,
+		)
+
+	if !moneyEqual(
+		expectedTotal,
+		receipt.TotalAmount,
+	) {
+		return
+	}
+
+	receipt.Subtotal =
+		subtotal
+
+	receipt.TaxAmount =
+		taxAmount
+
+	receipt.ServiceCharge =
+		serviceCharge
+
+	receipt.TipAmount =
+		tipAmount
+
+	receipt.DiscountAmount =
+		discount
+
+	receipt.OtherFees =
+		otherFees
+
+	receipt.LineItems =
+		baseItems
+
+	addReceiptWarningOnce(
+		receipt,
+		"Deterministic transportation charge reconciliation applied from visible line items.",
+	)
+}
+
+func currentBreakdownIsConsistent(
+	receipt *models.ReceiptExtraction,
+) bool {
+	if receipt == nil ||
+		receipt.Subtotal <= 0 ||
+		receipt.TotalAmount <= 0 {
+
+		return false
+	}
+
+	expectedTotal :=
+		receipt.Subtotal +
+			receipt.TaxAmount +
+			receipt.ServiceCharge +
+			receipt.TipAmount +
+			receipt.OtherFees -
+			receipt.DiscountAmount
+
+	if !moneyEqual(
+		expectedTotal,
+		receipt.TotalAmount,
+	) {
+		return false
+	}
+
+	if len(receipt.LineItems) == 0 {
+		return true
+	}
+
+	var lineItemSum float64
+
+	for _, item := range receipt.LineItems {
+
+		lineItemSum +=
+			item.Amount
+	}
+
+	return moneyEqual(
+		lineItemSum,
+		receipt.Subtotal,
+	)
+}
+
+func normalizeLineItemName(
+	name string,
+) string {
+	return strings.Join(
+		strings.Fields(
+			strings.ToLower(
+				strings.TrimSpace(
+					name,
+				),
+			),
+		),
+		" ",
+	)
+}
+
+func isCombinedTaxAndFeeLine(
+	name string,
+) bool {
+	hasTax :=
+		strings.Contains(
+			name,
+			"tax",
+		) ||
+			strings.Contains(
+				name,
+				"gst",
+			) ||
+			strings.Contains(
+				name,
+				"vat",
+			)
+
+	hasFee :=
+		strings.Contains(
+			name,
+			"fee",
+		) ||
+			strings.Contains(
+				name,
+				"surcharge",
+			)
+
+	return hasTax &&
+		hasFee
+}
+
+func isServiceChargeLine(
+	name string,
+) bool {
+	return strings.Contains(
+		name,
+		"service charge",
+	)
+}
+
+func isTipLine(
+	name string,
+) bool {
+	return strings.Contains(
+		name,
+		"tip",
+	) ||
+		strings.Contains(
+			name,
+			"gratuity",
+		)
+}
+
+func isDiscountLine(
+	name string,
+) bool {
+	return strings.Contains(
+		name,
+		"discount",
+	) ||
+		strings.Contains(
+			name,
+			"coupon",
+		) ||
+		strings.Contains(
+			name,
+			"promotion",
+		) ||
+		strings.Contains(
+			name,
+			"promo",
+		)
+}
+
+func isTaxLine(
+	name string,
+) bool {
+	return strings.Contains(
+		name,
+		"tax",
+	) ||
+		strings.Contains(
+			name,
+			"gst",
+		) ||
+		strings.Contains(
+			name,
+			"vat",
+		)
+}
+
+func isTransportationFeeLine(
+	name string,
+) bool {
+	return strings.Contains(
+		name,
+		"airport fee",
+	) ||
+		strings.Contains(
+			name,
+			"booking fee",
+		) ||
+		strings.Contains(
+			name,
+			"convenience fee",
+		) ||
+		strings.Contains(
+			name,
+			"platform fee",
+		) ||
+		strings.Contains(
+			name,
+			"processing fee",
+		) ||
+		strings.Contains(
+			name,
+			"service fee",
+		) ||
+		strings.Contains(
+			name,
+			"delivery fee",
+		) ||
+		strings.Contains(
+			name,
+			"parking fee",
+		) ||
+		strings.Contains(
+			name,
+			"toll",
+		) ||
+		strings.Contains(
+			name,
+			"surcharge",
+		)
+}
+
+func addReceiptWarningOnce(
+	receipt *models.ReceiptExtraction,
+	message string,
+) {
+	for _, warning := range receipt.Warnings {
+
+		if warning ==
+			message {
+
+			return
+		}
+	}
+
+	receipt.Warnings =
+		append(
+			receipt.Warnings,
+			message,
+		)
 }
 
 func NormalizeCurrency(

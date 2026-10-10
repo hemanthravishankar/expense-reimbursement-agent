@@ -8,9 +8,12 @@ import (
 	"time"
 
 	"github.com/hemanth-shankar/expense-agent/internal/clarification"
+	"github.com/hemanth-shankar/expense-agent/internal/duplicate"
 	"github.com/hemanth-shankar/expense-agent/internal/policy"
 	"github.com/hemanth-shankar/expense-agent/internal/workflow"
 )
+
+const statusManualReview = "MANUAL_REVIEW"
 
 var (
 	ErrNoPendingClarification = errors.New(
@@ -173,6 +176,17 @@ func (s *Service) ResolveClarification(
 	}
 }
 
+func duplicateRequiresManualReview(
+	matchType string,
+	isDuplicate bool,
+	strongIdentity bool,
+) bool {
+
+	return isDuplicate &&
+		matchType == duplicate.MatchMetadata &&
+		strongIdentity
+}
+
 func (s *Service) resolvePossibleDuplicate(
 	ctx context.Context,
 	result *workflow.Result,
@@ -250,21 +264,64 @@ func (s *Service) resolvePossibleDuplicate(
 		}
 
 		//
-		// Employee confirms it is a separate
-		// transaction, so continue with policy.
+		// A self-declaration must not be sufficient to override
+		// strong transaction identity evidence.
 		//
-		decision :=
-			policy.Evaluate(
-				result.FinalExtraction,
-				result.Employee,
-				s.policy,
-			)
+		// Strong same-employee metadata identity currently means:
+		// - same non-empty receipt number
+		// - same expense date
+		// - same total amount
+		//
+		// In that case the employee's YES response is recorded,
+		// but reimbursement remains pending until Finance/Admin
+		// reviews the claim.
+		//
+		strongDuplicateIdentity := false
 
-		result.PolicyDecision =
-			&decision
+		if result.DuplicateResult != nil {
 
-		result.FinalStatus =
-			decision.Status
+			strongDuplicateIdentity =
+				duplicateRequiresManualReview(
+					result.DuplicateResult.MatchType,
+					result.DuplicateResult.IsDuplicate,
+					result.DuplicateResult.StrongIdentity,
+				)
+		}
+
+		if strongDuplicateIdentity {
+
+			result.PolicyDecision =
+				nil
+
+			result.DuplicateResult.RequiresAdminReview =
+				true
+
+			result.DuplicateResult.Reason =
+				"Strong same-employee duplicate identity evidence was found. The employee states this is a separate transaction, so Finance must review it before reimbursement."
+
+			result.FinalStatus =
+				statusManualReview
+
+		} else {
+
+			//
+			// For ordinary similarity, an employee YES response
+			// with explanation can resume deterministic policy
+			// evaluation using the already validated extraction.
+			//
+			decision :=
+				policy.Evaluate(
+					result.FinalExtraction,
+					result.Employee,
+					s.policy,
+				)
+
+			result.PolicyDecision =
+				&decision
+
+			result.FinalStatus =
+				decision.Status
+		}
 	}
 
 	if answer == "no" {
