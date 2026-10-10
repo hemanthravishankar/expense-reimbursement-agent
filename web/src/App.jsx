@@ -2,13 +2,21 @@ import { useEffect, useMemo, useState } from "react";
 
 import {
   createExpenseReport,
+  createPolicy,
+  getActivePolicy,
   getClaim,
+  getClaimDocumentURL,
   getClaimEvents,
   getExpenseReport,
   getHealth,
+  getPolicy,
   listAdminExpenseReports,
   listEmployeeExpenseReports,
+  listPolicies,
+  publishPolicy,
   resolveClarification,
+  reviewClaim,
+  updatePolicy,
 } from "./api";
 
 import "./App.css";
@@ -46,8 +54,14 @@ const rejectedStatuses = new Set([
   "NOT_ALLOWED",
 ]);
 
+const reviewableClaimStatuses = new Set([
+  "MANUAL_REVIEW",
+  "HUMAN_REVIEW_REQUIRED",
+]);
+
 function App() {
   const [portal, setPortal] = useState("employee");
+  const [financeSection, setFinanceSection] = useState("review");
   const [systemState, setSystemState] = useState("checking");
 
   const [employee, setEmployee] = useState(initialEmployee);
@@ -57,6 +71,7 @@ function App() {
 
   const [activeReport, setActiveReport] = useState(null);
   const [selectedClaim, setSelectedClaim] = useState(null);
+  const [referenceClaim, setReferenceClaim] = useState(null);
   const [events, setEvents] = useState([]);
 
   const [employeeReports, setEmployeeReports] = useState([]);
@@ -66,13 +81,24 @@ function App() {
   const [answer, setAnswer] = useState("");
   const [explanation, setExplanation] = useState("");
 
+  const [reviewer, setReviewer] = useState("Finance User");
+  const [reviewNote, setReviewNote] = useState("");
+
+  const [policies, setPolicies] = useState([]);
+  const [activePolicy, setActivePolicy] = useState(null);
+  const [selectedPolicy, setSelectedPolicy] = useState(null);
+
   const [submitting, setSubmitting] = useState(false);
   const [loadingReport, setLoadingReport] = useState(false);
   const [loadingClaim, setLoadingClaim] = useState(false);
   const [loadingEmployeeHistory, setLoadingEmployeeHistory] = useState(false);
   const [loadingAdmin, setLoadingAdmin] = useState(false);
+  const [loadingPolicies, setLoadingPolicies] = useState(false);
   const [clarifying, setClarifying] = useState(false);
+  const [reviewing, setReviewing] = useState(false);
+  const [savingPolicy, setSavingPolicy] = useState(false);
   const [error, setError] = useState("");
+  const [policyError, setPolicyError] = useState("");
 
   useEffect(() => {
     let active = true;
@@ -101,14 +127,44 @@ function App() {
 
     let cancelled = false;
 
-    async function loadAdminQueue() {
+    async function loadFinanceData() {
       try {
         setLoadingAdmin(true);
+        setLoadingPolicies(true);
         setError("");
-        const response = await listAdminExpenseReports();
+        setPolicyError("");
+
+        const [reportsResponse, policiesResponse, activeResponse] =
+          await Promise.all([
+            listAdminExpenseReports(),
+            listPolicies(),
+            getActivePolicy(),
+          ]);
 
         if (!cancelled) {
-          setAdminReports(normalizeListPayload(response));
+          setAdminReports(normalizeListPayload(reportsResponse));
+          setPolicies(normalizeListPayload(policiesResponse));
+          setActivePolicy(activeResponse || null);
+
+          const normalizedPolicies =
+            normalizeListPayload(policiesResponse);
+
+          setSelectedPolicy((current) => {
+            if (current) {
+              return current;
+            }
+
+            const preferred =
+              normalizedPolicies.find(
+                (item) => item.status === "DRAFT",
+              ) ||
+              normalizedPolicies.find(
+                (item) => item.status === "PUBLISHED",
+              ) ||
+              normalizedPolicies[0];
+
+            return preferred || null;
+          });
         }
       } catch (requestError) {
         if (!cancelled) {
@@ -117,11 +173,12 @@ function App() {
       } finally {
         if (!cancelled) {
           setLoadingAdmin(false);
+          setLoadingPolicies(false);
         }
       }
     }
 
-    loadAdminQueue();
+    loadFinanceData();
 
     return () => {
       cancelled = true;
@@ -200,21 +257,31 @@ function App() {
       return;
     }
 
-    const accepted = incoming.filter((file) => {
+    const accepted = [];
+    const rejected = [];
+
+    for (const file of incoming) {
       const name = file.name.toLowerCase();
-      return (
+      const supported =
         file.type === "image/jpeg" ||
         file.type === "image/png" ||
         file.type === "application/pdf" ||
         name.endsWith(".jpg") ||
         name.endsWith(".jpeg") ||
         name.endsWith(".png") ||
-        name.endsWith(".pdf")
-      );
-    });
+        name.endsWith(".pdf");
 
-    if (accepted.length !== incoming.length) {
-      setError("Only JPG, PNG and PDF receipts are supported.");
+      if (!supported || file.size > 20 * 1024 * 1024) {
+        rejected.push(file);
+      } else {
+        accepted.push(file);
+      }
+    }
+
+    if (rejected.length) {
+      setError(
+        "Only JPG, PNG and PDF files up to 20 MB each are supported.",
+      );
     } else {
       setError("");
     }
@@ -230,7 +297,7 @@ function App() {
             item.lastModified === file.lastModified,
         );
 
-        if (!duplicate) {
+        if (!duplicate && next.length < 10) {
           next.push(file);
         }
       }
@@ -240,7 +307,9 @@ function App() {
   }
 
   function removeFile(index) {
-    setFiles((current) => current.filter((_, itemIndex) => itemIndex !== index));
+    setFiles((current) =>
+      current.filter((_, itemIndex) => itemIndex !== index),
+    );
   }
 
   async function submitReport(event) {
@@ -274,10 +343,15 @@ function App() {
       return;
     }
 
+    if (files.length > 10) {
+      setError("A maximum of 10 receipts can be submitted in one report.");
+      return;
+    }
+
     const totalSize = files.reduce((sum, file) => sum + file.size, 0);
 
-    if (totalSize > 20 * 1024 * 1024) {
-      setError("Combined upload size exceeds the 20 MB request limit.");
+    if (totalSize > 95 * 1024 * 1024) {
+      setError("Combined upload size is too large for one report.");
       return;
     }
 
@@ -297,6 +371,7 @@ function App() {
     try {
       setSubmitting(true);
       setSelectedClaim(null);
+      setReferenceClaim(null);
       setEvents([]);
 
       const created = await createExpenseReport(formData);
@@ -348,6 +423,103 @@ function App() {
     }
   }
 
+  async function refreshPolicies(preferredPolicyID = "") {
+    try {
+      setLoadingPolicies(true);
+      setPolicyError("");
+
+      const [versions, active] = await Promise.all([
+        listPolicies(),
+        getActivePolicy(),
+      ]);
+
+      const normalized = normalizeListPayload(versions);
+      setPolicies(normalized);
+      setActivePolicy(active || null);
+
+      const preferred =
+        normalized.find((item) => item.policy_id === preferredPolicyID) ||
+        normalized.find(
+          (item) => item.policy_id === selectedPolicy?.policy_id,
+        ) ||
+        normalized.find((item) => item.status === "DRAFT") ||
+        normalized.find((item) => item.status === "PUBLISHED") ||
+        normalized[0];
+
+      setSelectedPolicy(preferred || null);
+      return preferred || null;
+    } catch (requestError) {
+      setPolicyError(requestError.message);
+      return null;
+    } finally {
+      setLoadingPolicies(false);
+    }
+  }
+
+  async function openPolicy(policyID) {
+    if (!policyID) {
+      return;
+    }
+
+    try {
+      setLoadingPolicies(true);
+      setPolicyError("");
+      const version = await getPolicy(policyID);
+      setSelectedPolicy(version);
+    } catch (requestError) {
+      setPolicyError(requestError.message);
+    } finally {
+      setLoadingPolicies(false);
+    }
+  }
+
+  async function createPolicyDraft(payload) {
+    try {
+      setSavingPolicy(true);
+      setPolicyError("");
+      const created = await createPolicy(payload);
+      await refreshPolicies(created.policy_id);
+      return created;
+    } catch (requestError) {
+      setPolicyError(requestError.message);
+      throw requestError;
+    } finally {
+      setSavingPolicy(false);
+    }
+  }
+
+  async function savePolicyDraft(policyID, payload) {
+    try {
+      setSavingPolicy(true);
+      setPolicyError("");
+      const updated = await updatePolicy(policyID, payload);
+      await refreshPolicies(updated.policy_id);
+      return updated;
+    } catch (requestError) {
+      setPolicyError(requestError.message);
+      throw requestError;
+    } finally {
+      setSavingPolicy(false);
+    }
+  }
+
+  async function publishPolicyDraft(policyID, publishedBy) {
+    try {
+      setSavingPolicy(true);
+      setPolicyError("");
+      const published = await publishPolicy(policyID, {
+        published_by: publishedBy,
+      });
+      await refreshPolicies(published.policy_id);
+      return published;
+    } catch (requestError) {
+      setPolicyError(requestError.message);
+      throw requestError;
+    } finally {
+      setSavingPolicy(false);
+    }
+  }
+
   async function openReport(reportID) {
     if (!reportID) {
       return;
@@ -357,9 +529,11 @@ function App() {
       setLoadingReport(true);
       setError("");
       setSelectedClaim(null);
+      setReferenceClaim(null);
       setEvents([]);
       setAnswer("");
       setExplanation("");
+      setReviewNote("");
 
       const report = await getExpenseReport(reportID);
       setActiveReport(report);
@@ -385,6 +559,8 @@ function App() {
       setLoadingClaim(true);
       setAnswer("");
       setExplanation("");
+      setReviewNote("");
+      setReferenceClaim(null);
 
       const [claim, timeline] = await Promise.all([
         getClaim(claimID),
@@ -393,6 +569,13 @@ function App() {
 
       setSelectedClaim(claim);
       setEvents(Array.isArray(timeline) ? timeline : []);
+
+      const matchedRunID = claim?.duplicate_result?.matched_run_id;
+
+      if (portal === "admin" && matchedRunID) {
+        const matched = await getClaim(matchedRunID).catch(() => null);
+        setReferenceClaim(matched);
+      }
     } catch (requestError) {
       setError(requestError.message);
     } finally {
@@ -450,20 +633,67 @@ function App() {
     }
   }
 
+  async function submitFinanceReview(action) {
+    if (!selectedClaim?.run_id) {
+      return;
+    }
+
+    if (!reviewer.trim()) {
+      setError("Finance reviewer name is required.");
+      return;
+    }
+
+    if (!reviewNote.trim()) {
+      setError("Finance review note is required.");
+      return;
+    }
+
+    try {
+      setReviewing(true);
+      setError("");
+
+      const updated = await reviewClaim(selectedClaim.run_id, {
+        action,
+        reviewer: reviewer.trim(),
+        note: reviewNote.trim(),
+      });
+
+      setSelectedClaim(updated);
+
+      const timeline = await getClaimEvents(updated.run_id).catch(() => []);
+      setEvents(Array.isArray(timeline) ? timeline : []);
+
+      if (activeReport?.report_id) {
+        const refreshed = await getExpenseReport(activeReport.report_id);
+        setActiveReport(refreshed);
+      }
+
+      await refreshAdminReports();
+      setReviewNote("");
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setReviewing(false);
+    }
+  }
+
   function switchPortal(nextPortal) {
     setPortal(nextPortal);
     setActiveReport(null);
     setSelectedClaim(null);
+    setReferenceClaim(null);
     setEvents([]);
     setError("");
     setAnswer("");
     setExplanation("");
+    setReviewNote("");
   }
 
   function resetSubmission() {
     setFiles([]);
     setActiveReport(null);
     setSelectedClaim(null);
+    setReferenceClaim(null);
     setEvents([]);
     setAnswer("");
     setExplanation("");
@@ -513,6 +743,8 @@ function App() {
           />
         ) : (
           <AdminPortal
+            financeSection={financeSection}
+            setFinanceSection={setFinanceSection}
             reports={filteredAdminReports}
             counts={adminCounts}
             adminFilter={adminFilter}
@@ -521,11 +753,29 @@ function App() {
             loadingAdmin={loadingAdmin}
             activeReport={activeReport}
             selectedClaim={selectedClaim}
+            referenceClaim={referenceClaim}
             events={events}
             openReport={openReport}
             loadClaimDetail={loadClaimDetail}
             loadingClaim={loadingClaim}
             loadingReport={loadingReport}
+            reviewer={reviewer}
+            setReviewer={setReviewer}
+            reviewNote={reviewNote}
+            setReviewNote={setReviewNote}
+            reviewing={reviewing}
+            submitFinanceReview={submitFinanceReview}
+            policies={policies}
+            activePolicy={activePolicy}
+            selectedPolicy={selectedPolicy}
+            openPolicy={openPolicy}
+            refreshPolicies={refreshPolicies}
+            createPolicyDraft={createPolicyDraft}
+            savePolicyDraft={savePolicyDraft}
+            publishPolicyDraft={publishPolicyDraft}
+            loadingPolicies={loadingPolicies}
+            savingPolicy={savingPolicy}
+            policyError={policyError}
             error={error}
           />
         )}
@@ -546,7 +796,9 @@ function Header({ portal, onSwitchPortal, systemState }) {
         <div className="brand-mark">EA</div>
         <div>
           <div className="brand">Expense Agent</div>
-          <div className="brand-subtitle">Intelligent reimbursement operations</div>
+          <div className="brand-subtitle">
+            Intelligent reimbursement operations
+          </div>
         </div>
       </div>
 
@@ -563,7 +815,7 @@ function Header({ portal, onSwitchPortal, systemState }) {
           className={portal === "admin" ? "portal-tab active" : "portal-tab"}
           onClick={() => onSwitchPortal("admin")}
         >
-          Finance review
+          Finance
         </button>
       </nav>
 
@@ -616,21 +868,33 @@ function EmployeePortal(props) {
 
   return (
     <>
-      <section className="hero employee-hero">
+      <section className="hero employee-hero employee-hero-refined">
         <div className="hero-copy">
-          <div className="eyebrow">EMPLOYEE EXPENSE WORKSPACE</div>
-          <h1>One report. Multiple receipts. One accountable decision trail.</h1>
+          <div className="eyebrow">EMPLOYEE EXPENSES</div>
+          <h1>Submit receipts. Track what is reimbursable.</h1>
           <p>
-            Upload receipts together, let the vision agent extract each document,
-            then rely on deterministic validation, duplicate controls and policy
-            enforcement before reimbursement is calculated.
+            Create one report for multiple expenses. The agent reads each receipt,
+            verifies the numbers, checks policy and asks only when it needs your
+            clarification.
           </p>
         </div>
 
-        <div className="hero-metrics">
-          <Metric label="Vision" value="Qwen3-VL" sub="4B primary · 8B fallback" />
-          <Metric label="Controls" value="Deterministic" sub="Validation + policy" />
-          <Metric label="Evidence" value="SHA-256" sub="Immutable document identity" />
+        <div className="employee-promise-card">
+          <div>
+            <span>01</span>
+            <strong>Upload</strong>
+            <small>Up to 10 receipts</small>
+          </div>
+          <div>
+            <span>02</span>
+            <strong>Verify</strong>
+            <small>AI + deterministic checks</small>
+          </div>
+          <div>
+            <span>03</span>
+            <strong>Track</strong>
+            <small>Claim and reimbursement status</small>
+          </div>
         </div>
       </section>
 
@@ -642,11 +906,15 @@ function EmployeePortal(props) {
             <PanelHeader
               eyebrow="NEW REPORT"
               title="Submit business expenses"
-              aside={<span className="panel-hint">Up to 20 MB per request</span>}
+              aside={
+                <span className="panel-hint">
+                  10 receipts max · 20 MB each
+                </span>
+              }
             />
 
             <form onSubmit={submitReport}>
-              <div className="form-section-title">Employee</div>
+              <div className="form-section-title">Your details</div>
               <div className="form-grid three">
                 <Field
                   label="Employee ID"
@@ -688,7 +956,7 @@ function EmployeePortal(props) {
                 />
               </div>
 
-              <div className="form-section-title">Report</div>
+              <div className="form-section-title">Expense report</div>
               <div className="form-grid two">
                 <Field
                   label="Report title"
@@ -712,7 +980,8 @@ function EmployeePortal(props) {
                 <span>Receipts</span>
                 {files.length > 0 && (
                   <span className="file-count">
-                    {files.length} file{files.length === 1 ? "" : "s"} · {formatFileSize(combinedSize)}
+                    {files.length} file{files.length === 1 ? "" : "s"} ·{" "}
+                    {formatFileSize(combinedSize)}
                   </span>
                 )}
               </div>
@@ -756,8 +1025,13 @@ function EmployeePortal(props) {
               {files.length > 0 && (
                 <div className="file-list">
                   {files.map((file, index) => (
-                    <div className="file-row" key={`${file.name}-${file.size}-${index}`}>
-                      <div className="file-type">{fileExtension(file.name)}</div>
+                    <div
+                      className="file-row"
+                      key={`${file.name}-${file.size}-${index}`}
+                    >
+                      <div className="file-type">
+                        {fileExtension(file.name)}
+                      </div>
                       <div className="file-row-copy">
                         <strong>{file.name}</strong>
                         <span>{formatFileSize(file.size)}</span>
@@ -775,11 +1049,16 @@ function EmployeePortal(props) {
                 </div>
               )}
 
-              <button className="primary-button" type="submit" disabled={submitting}>
+              <button
+                className="primary-button"
+                type="submit"
+                disabled={submitting}
+              >
                 {submitting ? (
                   <>
                     <span className="spinner" />
-                    Processing {files.length} receipt{files.length === 1 ? "" : "s"}…
+                    Processing {files.length} receipt
+                    {files.length === 1 ? "" : "s"}…
                   </>
                 ) : (
                   <>
@@ -825,8 +1104,12 @@ function EmployeePortal(props) {
 
         <section className="panel result-workspace">
           <PanelHeader
-            eyebrow="AGENT OUTCOME"
-            title={activeReport ? activeReport.title || "Expense report" : "Report decision"}
+            eyebrow="REPORT STATUS"
+            title={
+              activeReport
+                ? activeReport.title || "Expense report"
+                : "Your reimbursement result"
+            }
             aside={
               activeReport ? (
                 <StatusBadge status={activeReport.status} />
@@ -859,7 +1142,11 @@ function EmployeePortal(props) {
 
           {activeReport && (
             <div className="result-actions">
-              <button type="button" className="secondary-button" onClick={resetSubmission}>
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={resetSubmission}
+              >
                 Start another report
               </button>
             </div>
@@ -871,6 +1158,8 @@ function EmployeePortal(props) {
 }
 
 function AdminPortal({
+  financeSection,
+  setFinanceSection,
   reports,
   counts,
   adminFilter,
@@ -879,22 +1168,41 @@ function AdminPortal({
   loadingAdmin,
   activeReport,
   selectedClaim,
+  referenceClaim,
   events,
   openReport,
   loadClaimDetail,
   loadingClaim,
   loadingReport,
+  reviewer,
+  setReviewer,
+  reviewNote,
+  setReviewNote,
+  reviewing,
+  submitFinanceReview,
+  policies,
+  activePolicy,
+  selectedPolicy,
+  openPolicy,
+  refreshPolicies,
+  createPolicyDraft,
+  savePolicyDraft,
+  publishPolicyDraft,
+  loadingPolicies,
+  savingPolicy,
+  policyError,
   error,
 }) {
   return (
     <>
       <section className="hero admin-hero">
         <div className="hero-copy">
-          <div className="eyebrow">FINANCE & RISK CONTROL</div>
-          <h1>Review exceptions without losing the evidence trail.</h1>
+          <div className="eyebrow">FINANCE CONTROL CENTER</div>
+          <h1>Investigate risk, decide claims and control policy.</h1>
           <p>
-            Cross-employee reuse, strong duplicate identity, human-review cases and
-            employee clarifications are surfaced here before money is authorized.
+            Review evidence before reimbursement, compare suspicious receipts
+            side by side and publish versioned policy without rebuilding the
+            application.
           </p>
         </div>
 
@@ -902,100 +1210,167 @@ function AdminPortal({
           <KpiCard label="Needs review" value={counts.review} tone="warning" />
           <KpiCard label="Completed" value={counts.completed} tone="success" />
           <KpiCard label="Rejected" value={counts.rejected} tone="danger" />
-          <KpiCard label="All reports" value={counts.all} tone="neutral" />
+          <KpiCard
+            label="Active policy"
+            value={
+              activePolicy?.version
+                ? `v${activePolicy.version}`
+                : "—"
+            }
+            tone="neutral"
+          />
         </div>
       </section>
 
-      {error && <ErrorBanner message={error} />}
+      <div className="finance-section-tabs">
+        <button
+          type="button"
+          className={
+            financeSection === "review"
+              ? "finance-section-tab active"
+              : "finance-section-tab"
+          }
+          onClick={() => setFinanceSection("review")}
+        >
+          Review queue
+        </button>
+        <button
+          type="button"
+          className={
+            financeSection === "policies"
+              ? "finance-section-tab active"
+              : "finance-section-tab"
+          }
+          onClick={() => setFinanceSection("policies")}
+        >
+          Policy management
+        </button>
+      </div>
 
-      <section className="admin-layout">
-        <section className="panel review-queue">
-          <PanelHeader
-            eyebrow="REVIEW QUEUE"
-            title="Expense reports"
-            aside={
-              <button
-                type="button"
-                className="text-button"
-                onClick={refreshAdminReports}
-                disabled={loadingAdmin}
-              >
-                {loadingAdmin ? "Refreshing…" : "Refresh"}
-              </button>
-            }
-          />
+      {error && financeSection === "review" && (
+        <ErrorBanner message={error} />
+      )}
 
-          <div className="filter-tabs">
-            <FilterButton
-              label="Review"
-              count={counts.review}
-              active={adminFilter === "review"}
-              onClick={() => setAdminFilter("review")}
+      {financeSection === "review" ? (
+        <section className="admin-layout">
+          <section className="panel review-queue">
+            <PanelHeader
+              eyebrow="REVIEW QUEUE"
+              title="Expense reports"
+              aside={
+                <button
+                  type="button"
+                  className="text-button"
+                  onClick={refreshAdminReports}
+                  disabled={loadingAdmin}
+                >
+                  {loadingAdmin ? "Refreshing…" : "Refresh"}
+                </button>
+              }
             />
-            <FilterButton
-              label="Completed"
-              count={counts.completed}
-              active={adminFilter === "completed"}
-              onClick={() => setAdminFilter("completed")}
-            />
-            <FilterButton
-              label="Rejected"
-              count={counts.rejected}
-              active={adminFilter === "rejected"}
-              onClick={() => setAdminFilter("rejected")}
-            />
-            <FilterButton
-              label="All"
-              count={counts.all}
-              active={adminFilter === "all"}
-              onClick={() => setAdminFilter("all")}
-            />
-          </div>
 
-          {loadingAdmin && !reports.length ? (
-            <LoadingState text="Loading Finance queue…" compact />
-          ) : reports.length ? (
-            <ReportList
-              reports={reports}
-              onOpen={openReport}
-              activeReportID={activeReport?.report_id}
-              admin
+            <div className="filter-tabs">
+              <FilterButton
+                label="Review"
+                count={counts.review}
+                active={adminFilter === "review"}
+                onClick={() => setAdminFilter("review")}
+              />
+              <FilterButton
+                label="Completed"
+                count={counts.completed}
+                active={adminFilter === "completed"}
+                onClick={() => setAdminFilter("completed")}
+              />
+              <FilterButton
+                label="Rejected"
+                count={counts.rejected}
+                active={adminFilter === "rejected"}
+                onClick={() => setAdminFilter("rejected")}
+              />
+              <FilterButton
+                label="All"
+                count={counts.all}
+                active={adminFilter === "all"}
+                onClick={() => setAdminFilter("all")}
+              />
+            </div>
+
+            {loadingAdmin && !reports.length ? (
+              <LoadingState text="Loading Finance queue…" compact />
+            ) : reports.length ? (
+              <ReportList
+                reports={reports}
+                onOpen={openReport}
+                activeReportID={activeReport?.report_id}
+                admin
+              />
+            ) : (
+              <EmptyState
+                title="Queue is clear"
+                text="No reports match the selected filter."
+                compact
+              />
+            )}
+          </section>
+
+          <section className="panel finance-detail">
+            <PanelHeader
+              eyebrow="CASE DETAIL"
+              title={
+                activeReport
+                  ? activeReport.title || "Expense report"
+                  : "Select a report"
+              }
+              aside={
+                activeReport && <StatusBadge status={activeReport.status} />
+              }
             />
-          ) : (
-            <EmptyState
-              title="Queue is clear"
-              text="No reports match the selected filter."
-              compact
-            />
-          )}
+
+            {loadingReport ? (
+              <LoadingState text="Loading case…" />
+            ) : !activeReport ? (
+              <EmptyState
+                title="Select a report from the queue"
+                text="Finance risk signals, receipt evidence, policy decisions and review actions will appear here."
+              />
+            ) : (
+              <ReportWorkspace
+                report={activeReport}
+                selectedClaim={selectedClaim}
+                referenceClaim={referenceClaim}
+                events={events}
+                onSelectClaim={loadClaimDetail}
+                loadingClaim={loadingClaim}
+                employeeView={false}
+                reviewer={reviewer}
+                setReviewer={setReviewer}
+                reviewNote={reviewNote}
+                setReviewNote={setReviewNote}
+                reviewing={reviewing}
+                onFinanceReview={submitFinanceReview}
+              />
+            )}
+          </section>
         </section>
-
-        <section className="panel finance-detail">
-          <PanelHeader
-            eyebrow="CASE DETAIL"
-            title={activeReport ? activeReport.title || "Expense report" : "Select a report"}
-            aside={activeReport && <StatusBadge status={activeReport.status} />}
-          />
-
-          {loadingReport ? (
-            <LoadingState text="Loading case…" />
-          ) : !activeReport ? (
-            <EmptyState
-              title="Select a report from the queue"
-              text="Finance risk signals, receipt extraction, duplicate evidence and lifecycle events will appear here."
-            />
-          ) : (
-            <ReportWorkspace
-              report={activeReport}
-              selectedClaim={selectedClaim}
-              events={events}
-              onSelectClaim={loadClaimDetail}
-              loadingClaim={loadingClaim}
-              employeeView={false}
-            />
-          )}
-        </section>
-      </section>
+      ) : (
+        <PolicyManagement
+          key={`${selectedPolicy?.policy_id || "none"}-${
+            selectedPolicy?.status || "unknown"
+          }`}
+          policies={policies}
+          activePolicy={activePolicy}
+          selectedPolicy={selectedPolicy}
+          onOpenPolicy={openPolicy}
+          onRefresh={refreshPolicies}
+          onCreate={createPolicyDraft}
+          onSave={savePolicyDraft}
+          onPublish={publishPolicyDraft}
+          loading={loadingPolicies}
+          saving={savingPolicy}
+          error={policyError}
+        />
+      )}
     </>
   );
 }
@@ -1003,6 +1378,7 @@ function AdminPortal({
 function ReportWorkspace({
   report,
   selectedClaim,
+  referenceClaim,
   events,
   onSelectClaim,
   loadingClaim,
@@ -1013,10 +1389,16 @@ function ReportWorkspace({
   clarifying,
   onClarify,
   employeeView,
+  reviewer,
+  setReviewer,
+  reviewNote,
+  setReviewNote,
+  reviewing,
+  onFinanceReview,
 }) {
   return (
     <div className="report-workspace-content">
-      <ReportSummary report={report} />
+      <ReportSummary report={report} employeeView={employeeView} />
 
       <SectionTitle>Receipts in this report</SectionTitle>
       <div className="claim-card-grid">
@@ -1032,14 +1414,24 @@ function ReportWorkspace({
             onClick={() => onSelectClaim(item.claim_id)}
           >
             <div className="claim-card-top">
-              <span className="claim-position">#{item.position || 1}</span>
+              <span className="claim-position">
+                #{item.position || 1}
+              </span>
               <StatusBadge status={item.status} />
             </div>
-            <strong>{item.merchant || item.document_name || "Receipt"}</strong>
-            <span>{item.category || item.document_name || "Expense"}</span>
+            <strong>
+              {item.merchant || item.document_name || "Receipt"}
+            </strong>
+            <span>
+              {item.category || item.document_name || "Expense"}
+            </span>
             <div className="claim-card-money">
-              <span>{formatMoney(item.claimed_amount, item.currency)}</span>
-              <strong>{formatMoney(item.reimbursable_amount, item.currency)}</strong>
+              <span>
+                {formatMoney(item.claimed_amount, item.currency)}
+              </span>
+              <strong>
+                {formatMoney(item.reimbursable_amount, item.currency)}
+              </strong>
             </div>
           </button>
         ))}
@@ -1050,6 +1442,7 @@ function ReportWorkspace({
       ) : selectedClaim ? (
         <ClaimDetail
           claim={selectedClaim}
+          referenceClaim={referenceClaim}
           events={events}
           employeeView={employeeView}
           answer={answer}
@@ -1058,11 +1451,21 @@ function ReportWorkspace({
           setExplanation={setExplanation}
           clarifying={clarifying}
           onClarify={onClarify}
+          reviewer={reviewer}
+          setReviewer={setReviewer}
+          reviewNote={reviewNote}
+          setReviewNote={setReviewNote}
+          reviewing={reviewing}
+          onFinanceReview={onFinanceReview}
         />
       ) : (
         <EmptyState
           title="Select a receipt"
-          text="Choose a receipt above to inspect its extraction, policy decision and audit evidence."
+          text={
+            employeeView
+              ? "Choose a receipt above to see its reimbursement result."
+              : "Choose a receipt above to inspect evidence, risk and policy."
+          }
           compact
         />
       )}
@@ -1070,14 +1473,26 @@ function ReportWorkspace({
   );
 }
 
-function ReportSummary({ report }) {
-  const currency = report.items?.find((item) => item.currency)?.currency || "USD";
+function ReportSummary({ report, employeeView }) {
+  const currency =
+    report.items?.find((item) => item.currency)?.currency || "USD";
 
   return (
     <>
       <div className="report-summary-strip">
-        <SummaryMetric label="Report ID" value={shortID(report.report_id)} mono />
-        <SummaryMetric label="Receipts" value={String(report.item_count ?? report.items?.length ?? 0)} />
+        {!employeeView && (
+          <SummaryMetric
+            label="Report ID"
+            value={shortID(report.report_id)}
+            mono
+          />
+        )}
+        <SummaryMetric
+          label="Receipts"
+          value={String(
+            report.item_count ?? report.items?.length ?? 0,
+          )}
+        />
         <SummaryMetric
           label="Claimed"
           value={formatMoney(report.total_claimed, currency)}
@@ -1087,6 +1502,12 @@ function ReportSummary({ report }) {
           value={formatMoney(report.total_reimbursable, currency)}
           accent
         />
+        {employeeView && (
+          <SummaryMetric
+            label="Status"
+            value={humanize(report.status)}
+          />
+        )}
       </div>
 
       <div className="report-meta-row">
@@ -1114,6 +1535,7 @@ function ReportSummary({ report }) {
 
 function ClaimDetail({
   claim,
+  referenceClaim,
   events,
   employeeView,
   answer,
@@ -1122,6 +1544,12 @@ function ClaimDetail({
   setExplanation,
   clarifying,
   onClarify,
+  reviewer,
+  setReviewer,
+  reviewNote,
+  setReviewNote,
+  reviewing,
+  onFinanceReview,
 }) {
   const extraction = claim.final_extraction;
   const validation = claim.final_validation;
@@ -1129,56 +1557,174 @@ function ClaimDetail({
   const decision = claim.policy_decision;
   const clarification = claim.clarification_result;
   const riskReview = Boolean(duplicate?.requires_admin_review);
+  const reviewable = reviewableClaimStatuses.has(
+    String(claim.final_status || "").toUpperCase(),
+  );
+
+  if (employeeView) {
+    return (
+      <div className="claim-detail employee-claim-detail">
+        <EmployeeOutcomeSummary
+          claim={claim}
+          extraction={extraction}
+          decision={decision}
+        />
+
+        {clarification?.required && (
+          <ClarificationBox
+            clarification={clarification}
+            answer={answer}
+            setAnswer={setAnswer}
+            explanation={explanation}
+            setExplanation={setExplanation}
+            clarifying={clarifying}
+            onClarify={onClarify}
+          />
+        )}
+
+        {extraction && (
+          <>
+            <SectionTitle>Receipt summary</SectionTitle>
+            <div className="employee-receipt-summary">
+              <Detail label="Merchant" value={extraction.merchant} />
+              <Detail label="Date" value={extraction.expense_date} />
+              <Detail
+                label="Category"
+                value={extraction.category_suggestion}
+              />
+              <Detail
+                label="Receipt number"
+                value={extraction.receipt_number || "—"}
+              />
+              <Detail
+                label="Total"
+                value={formatMoney(
+                  extraction.total_amount,
+                  extraction.currency,
+                )}
+                strong
+              />
+            </div>
+
+            <LineItems extraction={extraction} />
+          </>
+        )}
+
+        {decision && <DecisionPanel decision={decision} employeeView />}
+
+        {!decision &&
+          (riskReview || claim.final_status === "MANUAL_REVIEW") && (
+            <>
+              <SectionTitle>Reimbursement</SectionTitle>
+              <div className="held-decision-card">
+                <div>
+                  <span>Current state</span>
+                  <strong>Finance review required</strong>
+                  <small>
+                    No reimbursement is authorized until the review is
+                    completed.
+                  </small>
+                </div>
+                <div className="held-amount">
+                  <span>Authorized now</span>
+                  <strong>
+                    {formatMoney(
+                      0,
+                      extraction?.currency || "USD",
+                    )}
+                  </strong>
+                </div>
+              </div>
+            </>
+          )}
+
+        {claim.clarification_answers?.length > 0 && (
+          <ClarificationAnswers answers={claim.clarification_answers} />
+        )}
+
+        <details className="technical-disclosure">
+          <summary>
+            <span>
+              <strong>Technical details</strong>
+              <small>
+                Validation, duplicate checks, evidence and lifecycle
+              </small>
+            </span>
+            <span className="disclosure-arrow">⌄</span>
+          </summary>
+
+          <div className="technical-body">
+            <ExecutionTrace
+              claim={claim}
+              validation={validation}
+              duplicate={duplicate}
+              decision={decision}
+            />
+
+            {validation && !claim.ai_processing_skipped && (
+              <ValidationPanel
+                validation={validation}
+                currency={extraction?.currency}
+              />
+            )}
+
+            {duplicate &&
+              duplicate.match_type &&
+              duplicate.match_type !== "NONE" && (
+                <DuplicatePanel
+                  duplicate={duplicate}
+                  employeeView
+                />
+              )}
+
+            <EvidencePanel claim={claim} />
+
+            <SectionTitle>Business lifecycle</SectionTitle>
+            <Timeline events={events} />
+          </div>
+        </details>
+      </div>
+    );
+  }
 
   return (
-    <div className="claim-detail">
+    <div className="claim-detail finance-claim-detail">
       <div className="claim-detail-header">
         <div>
-          <span className="detail-kicker">CLAIM DETAIL</span>
-          <h3>{extraction?.merchant || claim.receipt_path || "Receipt"}</h3>
+          <span className="detail-kicker">CLAIM INVESTIGATION</span>
+          <h3>
+            {extraction?.merchant || claim.receipt_path || "Receipt"}
+          </h3>
           <p>{shortID(claim.run_id)}</p>
         </div>
         <StatusBadge status={claim.final_status} />
       </div>
 
-      {riskReview && (
-        <RiskBanner duplicate={duplicate} />
-      )}
+      {riskReview && <RiskBanner duplicate={duplicate} />}
 
       {claim.final_status === "MANUAL_REVIEW" && !riskReview && (
         <div className="notice warning strong-notice">
           <strong>Finance review required</strong>
           <span>
-            Strong duplicate identity evidence was found. Automatic reimbursement is
-            intentionally blocked pending human review.
+            Strong transaction identity or another review condition
+            blocked automatic reimbursement.
           </span>
         </div>
       )}
 
-      <SectionTitle>Agent execution</SectionTitle>
-      <div className="trace-grid">
-        <TraceStep label="Document hash" value="Verified" state="success" />
-        <TraceStep
-          label="Vision model"
-          value={claim.ai_processing_skipped ? "Skipped" : shortModelName(claim.final_model)}
-          state={claim.ai_processing_skipped ? "neutral" : "success"}
+      {(duplicate?.matched_run_id || referenceClaim) && (
+        <FinanceEvidenceComparison
+          claim={claim}
+          referenceClaim={referenceClaim}
         />
-        <TraceStep
-          label="Validation"
-          value={claim.ai_processing_skipped ? "N/A" : validation?.valid ? "Passed" : "Failed"}
-          state={validation?.valid ? "success" : "warning"}
-        />
-        <TraceStep
-          label="Duplicate control"
-          value={duplicate?.match_type ? humanize(duplicate.match_type) : "No match"}
-          state={duplicate?.match_type && duplicate.match_type !== "NONE" ? "warning" : "success"}
-        />
-        <TraceStep
-          label="Policy"
-          value={decision ? "Evaluated" : riskReview || claim.final_status === "MANUAL_REVIEW" ? "Held for review" : "Not required"}
-          state={decision ? "success" : "neutral"}
-        />
-      </div>
+      )}
+
+      <ExecutionTrace
+        claim={claim}
+        validation={validation}
+        duplicate={duplicate}
+        decision={decision}
+      />
 
       {extraction && (
         <>
@@ -1186,40 +1732,65 @@ function ClaimDetail({
           <div className="detail-grid">
             <Detail label="Merchant" value={extraction.merchant} />
             <Detail label="Expense date" value={extraction.expense_date} />
-            <Detail label="Category" value={extraction.category_suggestion} />
-            <Detail label="Receipt number" value={extraction.receipt_number || "—"} />
+            <Detail
+              label="Category"
+              value={extraction.category_suggestion}
+            />
+            <Detail
+              label="Receipt number"
+              value={extraction.receipt_number || "—"}
+            />
             <Detail label="Currency" value={extraction.currency} />
             <Detail
               label="AI confidence"
               value={
-                extraction.confidence !== undefined && extraction.confidence !== null
+                extraction.confidence !== undefined &&
+                extraction.confidence !== null
                   ? `${Math.round(extraction.confidence * 100)}%`
                   : "—"
               }
             />
             <Detail
               label="Subtotal"
-              value={formatMoney(extraction.subtotal, extraction.currency)}
+              value={formatMoney(
+                extraction.subtotal,
+                extraction.currency,
+              )}
             />
             <Detail
               label="Tax"
-              value={formatMoney(extraction.tax_amount, extraction.currency)}
+              value={formatMoney(
+                extraction.tax_amount,
+                extraction.currency,
+              )}
             />
             <Detail
               label="Service charge"
-              value={formatMoney(extraction.service_charge, extraction.currency)}
+              value={formatMoney(
+                extraction.service_charge,
+                extraction.currency,
+              )}
             />
             <Detail
               label="Other fees"
-              value={formatMoney(extraction.other_fees, extraction.currency)}
+              value={formatMoney(
+                extraction.other_fees,
+                extraction.currency,
+              )}
             />
             <Detail
               label="Discount"
-              value={formatMoney(extraction.discount_amount, extraction.currency)}
+              value={formatMoney(
+                extraction.discount_amount,
+                extraction.currency,
+              )}
             />
             <Detail
               label="Total"
-              value={formatMoney(extraction.total_amount, extraction.currency)}
+              value={formatMoney(
+                extraction.total_amount,
+                extraction.currency,
+              )}
               strong
             />
           </div>
@@ -1229,40 +1800,33 @@ function ClaimDetail({
       )}
 
       {validation && !claim.ai_processing_skipped && (
-        <ValidationPanel validation={validation} currency={extraction?.currency} />
-      )}
-
-      {duplicate && duplicate.match_type && duplicate.match_type !== "NONE" && (
-        <DuplicatePanel duplicate={duplicate} employeeView={employeeView} />
-      )}
-
-      {employeeView && clarification?.required && (
-        <ClarificationBox
-          clarification={clarification}
-          answer={answer}
-          setAnswer={setAnswer}
-          explanation={explanation}
-          setExplanation={setExplanation}
-          clarifying={clarifying}
-          onClarify={onClarify}
+        <ValidationPanel
+          validation={validation}
+          currency={extraction?.currency}
         />
       )}
 
-      {decision && (
-        <DecisionPanel decision={decision} />
-      )}
+      {duplicate &&
+        duplicate.match_type &&
+        duplicate.match_type !== "NONE" && (
+          <DuplicatePanel duplicate={duplicate} employeeView={false} />
+        )}
 
-      {!decision && (riskReview || claim.final_status === "MANUAL_REVIEW") && (
+      {decision && <DecisionPanel decision={decision} />}
+
+      {!decision && reviewable && (
         <>
           <SectionTitle>Reimbursement state</SectionTitle>
           <div className="held-decision-card">
             <div>
               <span>Automatic reimbursement</span>
-              <strong>Blocked pending review</strong>
+              <strong>Blocked pending Finance decision</strong>
             </div>
             <div className="held-amount">
               <span>Authorized now</span>
-              <strong>{formatMoney(0, extraction?.currency || "USD")}</strong>
+              <strong>
+                {formatMoney(0, extraction?.currency || "USD")}
+              </strong>
             </div>
           </div>
         </>
@@ -1272,11 +1836,351 @@ function ClaimDetail({
         <ClarificationAnswers answers={claim.clarification_answers} />
       )}
 
+      {reviewable && onFinanceReview && (
+        <FinanceReviewPanel
+          reviewer={reviewer}
+          setReviewer={setReviewer}
+          note={reviewNote}
+          setNote={setReviewNote}
+          reviewing={reviewing}
+          onReview={onFinanceReview}
+        />
+      )}
+
       <EvidencePanel claim={claim} />
 
       <SectionTitle>Business lifecycle</SectionTitle>
       <Timeline events={events} />
     </div>
+  );
+}
+
+function EmployeeOutcomeSummary({ claim, extraction, decision }) {
+  const status = String(claim.final_status || "");
+  const currency =
+    decision?.currency || extraction?.currency || "USD";
+  const claimed =
+    decision?.claimed_amount ?? extraction?.total_amount ?? 0;
+  const reimbursable =
+    decision?.reimbursable_amount ??
+    (status === "APPROVED" ? claimed : 0);
+
+  return (
+    <div className={`employee-outcome ${statusClass(status)}`}>
+      <div className="employee-outcome-main">
+        <div>
+          <span className="detail-kicker">YOUR CLAIM</span>
+          <h3>{extraction?.merchant || claim.receipt_path || "Receipt"}</h3>
+          <p>{employeeStatusMessage(status)}</p>
+        </div>
+        <StatusBadge status={status} />
+      </div>
+
+      <div className="employee-outcome-money">
+        <div>
+          <span>Claimed</span>
+          <strong>{formatMoney(claimed, currency)}</strong>
+        </div>
+        <div className="outcome-reimbursable">
+          <span>Reimbursable now</span>
+          <strong>{formatMoney(reimbursable, currency)}</strong>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ExecutionTrace({ claim, validation, duplicate, decision }) {
+  const riskHeld =
+    duplicate?.requires_admin_review ||
+    claim.final_status === "MANUAL_REVIEW";
+
+  return (
+    <>
+      <SectionTitle>Agent execution</SectionTitle>
+      <div className="trace-grid">
+        <TraceStep
+          label="Document hash"
+          value="Verified"
+          state="success"
+        />
+        <TraceStep
+          label="Vision model"
+          value={
+            claim.ai_processing_skipped
+              ? "Skipped"
+              : shortModelName(claim.final_model)
+          }
+          state={
+            claim.ai_processing_skipped ? "neutral" : "success"
+          }
+        />
+        <TraceStep
+          label="Validation"
+          value={
+            claim.ai_processing_skipped
+              ? "N/A"
+              : validation?.valid
+                ? "Passed"
+                : "Failed"
+          }
+          state={validation?.valid ? "success" : "warning"}
+        />
+        <TraceStep
+          label="Duplicate control"
+          value={
+            duplicate?.match_type
+              ? humanize(duplicate.match_type)
+              : "No match"
+          }
+          state={
+            duplicate?.match_type &&
+            duplicate.match_type !== "NONE"
+              ? "warning"
+              : "success"
+          }
+        />
+        <TraceStep
+          label="Policy"
+          value={
+            decision
+              ? decision.policy_version
+                ? `v${decision.policy_version}`
+                : "Evaluated"
+              : riskHeld
+                ? "Held for review"
+                : "Not required"
+          }
+          state={decision ? "success" : "neutral"}
+        />
+      </div>
+    </>
+  );
+}
+
+function FinanceEvidenceComparison({ claim, referenceClaim }) {
+  const current = claim.final_extraction;
+  const reference = referenceClaim?.final_extraction;
+  const duplicate = claim.duplicate_result;
+
+  return (
+    <>
+      <SectionTitle>Receipt comparison</SectionTitle>
+
+      <div className="comparison-risk-summary">
+        <div>
+          <span>Match type</span>
+          <strong>{humanize(duplicate?.match_type)}</strong>
+        </div>
+        <div>
+          <span>Confidence</span>
+          <strong>
+            {Math.round((duplicate?.confidence || 0) * 100)}%
+          </strong>
+        </div>
+        <div>
+          <span>Strong identity</span>
+          <strong>
+            {duplicate?.strong_identity ? "Yes" : "No"}
+          </strong>
+        </div>
+        <div>
+          <span>Matched employee</span>
+          <strong>
+            {duplicate?.matched_employee_id || "—"}
+          </strong>
+        </div>
+      </div>
+
+      <div className="receipt-comparison-grid">
+        <ReceiptEvidenceCard
+          title="Current claim"
+          claim={claim}
+          extraction={current}
+          employeeLabel={`${claim.employee?.name || "Employee"} · ${
+            claim.employee?.id || "—"
+          }`}
+        />
+
+        <ReceiptEvidenceCard
+          title="Reference claim"
+          claim={referenceClaim}
+          extraction={reference}
+          employeeLabel={
+            referenceClaim
+              ? `${
+                  referenceClaim.employee?.name || "Employee"
+                } · ${referenceClaim.employee?.id || "—"}`
+              : duplicate?.matched_employee_id || "Matched employee"
+          }
+          emptyText={
+            referenceClaim
+              ? ""
+              : "Reference claim could not be loaded."
+          }
+        />
+      </div>
+    </>
+  );
+}
+
+function ReceiptEvidenceCard({
+  title,
+  claim,
+  extraction,
+  employeeLabel,
+  emptyText,
+}) {
+  const mimeType =
+    claim?.stored_document?.mime_type ||
+    claim?.document_mime_type ||
+    "";
+  const documentURL = claim?.run_id
+    ? getClaimDocumentURL(claim.run_id)
+    : "";
+
+  return (
+    <div className="receipt-evidence-card">
+      <div className="receipt-evidence-heading">
+        <div>
+          <span>{title}</span>
+          <strong>{employeeLabel}</strong>
+        </div>
+        {claim && <StatusBadge status={claim.final_status} />}
+      </div>
+
+      {claim && documentURL ? (
+        <DocumentPreview
+          url={documentURL}
+          mimeType={mimeType}
+          name={
+            claim.stored_document?.original_name ||
+            claim.receipt_path ||
+            "receipt"
+          }
+        />
+      ) : (
+        <div className="document-preview empty">
+          {emptyText || "No document available."}
+        </div>
+      )}
+
+      <div className="comparison-fields">
+        <EvidenceFact
+          label="Merchant"
+          value={extraction?.merchant || "—"}
+        />
+        <EvidenceFact
+          label="Date"
+          value={extraction?.expense_date || "—"}
+        />
+        <EvidenceFact
+          label="Receipt #"
+          value={extraction?.receipt_number || "—"}
+        />
+        <EvidenceFact
+          label="Total"
+          value={
+            extraction
+              ? formatMoney(
+                  extraction.total_amount,
+                  extraction.currency,
+                )
+              : "—"
+          }
+        />
+      </div>
+    </div>
+  );
+}
+
+function DocumentPreview({ url, mimeType, name }) {
+  const isPDF =
+    String(mimeType || "").toLowerCase() === "application/pdf" ||
+    String(name || "").toLowerCase().endsWith(".pdf");
+
+  return (
+    <div className="document-preview">
+      {isPDF ? (
+        <iframe src={url} title={name || "Receipt PDF"} />
+      ) : (
+        <img src={url} alt={name || "Receipt evidence"} />
+      )}
+      <a href={url} target="_blank" rel="noreferrer">
+        Open original ↗
+      </a>
+    </div>
+  );
+}
+
+function EvidenceFact({ label, value }) {
+  return (
+    <div>
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
+function FinanceReviewPanel({
+  reviewer,
+  setReviewer,
+  note,
+  setNote,
+  reviewing,
+  onReview,
+}) {
+  return (
+    <>
+      <SectionTitle>Finance decision</SectionTitle>
+      <div className="finance-review-panel">
+        <div className="finance-review-copy">
+          <strong>Resolve this review</strong>
+          <p>
+            Approving confirms the transaction is legitimate and then
+            applies the currently published deterministic policy. Rejecting
+            authorizes no reimbursement.
+          </p>
+        </div>
+
+        <div className="finance-review-form">
+          <Field
+            label="Reviewed by"
+            value={reviewer}
+            onChange={(event) => setReviewer(event.target.value)}
+            placeholder="Finance reviewer"
+          />
+          <TextAreaField
+            label="Review note"
+            value={note}
+            onChange={(event) => setNote(event.target.value)}
+            placeholder="Record why this claim is legitimate or why it should be rejected…"
+            rows={4}
+          />
+        </div>
+
+        <div className="finance-review-actions">
+          <button
+            type="button"
+            className="danger-button"
+            disabled={reviewing || !reviewer.trim() || !note.trim()}
+            onClick={() => onReview("REJECT")}
+          >
+            {reviewing ? "Saving…" : "Reject claim"}
+          </button>
+          <button
+            type="button"
+            className="approve-button"
+            disabled={reviewing || !reviewer.trim() || !note.trim()}
+            onClick={() => onReview("APPROVE")}
+          >
+            {reviewing
+              ? "Saving…"
+              : "Approve as legitimate & apply policy"}
+          </button>
+        </div>
+      </div>
+    </>
   );
 }
 
@@ -1290,16 +2194,26 @@ function RiskBanner({ duplicate }) {
         <p>{duplicate.reason}</p>
         <div className="risk-meta">
           <span>
-            Confidence <strong>{Math.round((duplicate.confidence || 0) * 100)}%</strong>
+            Confidence{" "}
+            <strong>
+              {Math.round((duplicate.confidence || 0) * 100)}%
+            </strong>
           </span>
           <span>
-            Strong identity <strong>{duplicate.strong_identity ? "Yes" : "No"}</strong>
+            Strong identity{" "}
+            <strong>
+              {duplicate.strong_identity ? "Yes" : "No"}
+            </strong>
           </span>
           <span>
-            Matched employee <strong>{duplicate.matched_employee_id || "—"}</strong>
+            Matched employee{" "}
+            <strong>{duplicate.matched_employee_id || "—"}</strong>
           </span>
           <span>
-            Matched run <strong className="mono">{shortID(duplicate.matched_run_id)}</strong>
+            Matched run{" "}
+            <strong className="mono">
+              {shortID(duplicate.matched_run_id)}
+            </strong>
           </span>
         </div>
       </div>
@@ -1308,18 +2222,32 @@ function RiskBanner({ duplicate }) {
 }
 
 function DuplicatePanel({ duplicate, employeeView }) {
-  const crossEmployee = String(duplicate.match_type || "").startsWith("CROSS_EMPLOYEE");
+  const crossEmployee = String(
+    duplicate.match_type || "",
+  ).startsWith("CROSS_EMPLOYEE");
 
   return (
     <>
       <SectionTitle>Duplicate & fraud controls</SectionTitle>
-      <div className={duplicate.requires_admin_review ? "duplicate-card risk" : "duplicate-card"}>
+      <div
+        className={
+          duplicate.requires_admin_review
+            ? "duplicate-card risk"
+            : "duplicate-card"
+        }
+      >
         <div>
           <div className="duplicate-title-row">
             <strong>{humanize(duplicate.match_type)}</strong>
-            {duplicate.strong_identity && <span className="mini-pill">Strong identity</span>}
+            {duplicate.strong_identity && (
+              <span className="mini-pill">Strong identity</span>
+            )}
           </div>
-          <p>{duplicate.reason}</p>
+          <p>
+            {employeeView && crossEmployee
+              ? "This claim requires Finance review before reimbursement can be authorized."
+              : duplicate.reason}
+          </p>
 
           {!employeeView && duplicate.matched_employee_id && (
             <div className="duplicate-metadata">
@@ -1328,9 +2256,12 @@ function DuplicatePanel({ duplicate, employeeView }) {
             </div>
           )}
 
-          {duplicate.matched_run_id && !crossEmployee && (
-            <small>Matched claim: {shortID(duplicate.matched_run_id)}</small>
-          )}
+          {duplicate.matched_run_id &&
+            (!crossEmployee || !employeeView) && (
+              <small>
+                Matched claim: {shortID(duplicate.matched_run_id)}
+              </small>
+            )}
         </div>
         <div className="confidence-score">
           {Math.round((duplicate.confidence || 0) * 100)}%
@@ -1341,33 +2272,67 @@ function DuplicatePanel({ duplicate, employeeView }) {
   );
 }
 
-function DecisionPanel({ decision }) {
+function DecisionPanel({ decision, employeeView = false }) {
   return (
     <>
-      <SectionTitle>Reimbursement decision</SectionTitle>
+      <SectionTitle>
+        {employeeView
+          ? "Reimbursement"
+          : "Reimbursement decision"}
+      </SectionTitle>
       <div className="decision-card">
         <div>
           <span>Claimed</span>
-          <strong>{formatMoney(decision.claimed_amount, decision.currency)}</strong>
+          <strong>
+            {formatMoney(
+              decision.claimed_amount,
+              decision.currency,
+            )}
+          </strong>
         </div>
         <div>
           <span>Policy limit</span>
-          <strong>{formatMoney(decision.policy_limit, decision.currency)}</strong>
+          <strong>
+            {formatMoney(
+              decision.policy_limit,
+              decision.currency,
+            )}
+          </strong>
         </div>
         <div className="decision-highlight">
           <span>Reimbursable</span>
-          <strong>{formatMoney(decision.reimbursable_amount, decision.currency)}</strong>
+          <strong>
+            {formatMoney(
+              decision.reimbursable_amount,
+              decision.currency,
+            )}
+          </strong>
         </div>
         <div>
           <span>Excess</span>
-          <strong>{formatMoney(decision.excess_amount, decision.currency)}</strong>
+          <strong>
+            {formatMoney(
+              decision.excess_amount,
+              decision.currency,
+            )}
+          </strong>
         </div>
       </div>
 
       {decision.reason && (
         <div className="policy-reason">
-          <strong>Deterministic policy reasoning</strong>
+          <strong>
+            {employeeView ? "Why" : "Deterministic policy reasoning"}
+          </strong>
           <p>{decision.reason}</p>
+          {(decision.policy_name || decision.policy_version) && (
+            <small>
+              {decision.policy_name || "Policy"}
+              {decision.policy_version
+                ? ` · Version ${decision.policy_version}`
+                : ""}
+            </small>
+          )}
         </div>
       )}
     </>
@@ -1380,13 +2345,20 @@ function ClarificationAnswers({ answers }) {
       <SectionTitle>Employee clarification</SectionTitle>
       <div className="answer-list">
         {answers.map((item, index) => (
-          <div className="answered-card" key={`${item.question_code}-${index}`}>
+          <div
+            className="answered-card"
+            key={`${item.question_code}-${index}`}
+          >
             <div>
               <strong>{humanize(item.question_code)}</strong>
               {item.explanation && <p>{item.explanation}</p>}
-              {item.answered_at && <small>{formatDateTime(item.answered_at)}</small>}
+              {item.answered_at && (
+                <small>{formatDateTime(item.answered_at)}</small>
+              )}
             </div>
-            <StatusBadge status={String(item.answer || "").toUpperCase()} />
+            <StatusBadge
+              status={String(item.answer || "").toUpperCase()}
+            />
           </div>
         ))}
       </div>
@@ -1405,12 +2377,36 @@ function EvidencePanel({ claim }) {
       <div className="evidence-card">
         <EvidenceRow
           label="Original file"
-          value={claim.stored_document?.original_name || claim.receipt_path}
+          value={
+            claim.stored_document?.original_name ||
+            claim.receipt_path
+          }
         />
-        <EvidenceRow label="MIME type" value={claim.stored_document?.mime_type || claim.document_mime_type} />
-        <EvidenceRow label="SHA-256" value={claim.receipt_sha256 || claim.stored_document?.sha256} mono />
-        <EvidenceRow label="Storage key" value={claim.stored_document?.key} mono />
-        <EvidenceRow label="Audit record" value={claim.audit_path} mono />
+        <EvidenceRow
+          label="MIME type"
+          value={
+            claim.stored_document?.mime_type ||
+            claim.document_mime_type
+          }
+        />
+        <EvidenceRow
+          label="SHA-256"
+          value={
+            claim.receipt_sha256 ||
+            claim.stored_document?.sha256
+          }
+          mono
+        />
+        <EvidenceRow
+          label="Storage key"
+          value={claim.stored_document?.key}
+          mono
+        />
+        <EvidenceRow
+          label="Audit record"
+          value={claim.audit_path}
+          mono
+        />
       </div>
     </>
   );
@@ -1435,7 +2431,7 @@ function ClarificationBox({
 
   return (
     <>
-      <SectionTitle>Agent needs your clarification</SectionTitle>
+      <SectionTitle>Action required</SectionTitle>
       <div className="clarification-card">
         <div className="agent-avatar">AI</div>
         <div className="clarification-content">
@@ -1447,14 +2443,22 @@ function ClarificationBox({
               <div className="choice-row">
                 <button
                   type="button"
-                  className={answer === "yes" ? "choice active" : "choice"}
+                  className={
+                    answer === "yes"
+                      ? "choice active"
+                      : "choice"
+                  }
                   onClick={() => setAnswer("yes")}
                 >
                   Yes, genuinely separate
                 </button>
                 <button
                   type="button"
-                  className={answer === "no" ? "choice active danger-choice" : "choice"}
+                  className={
+                    answer === "no"
+                      ? "choice active danger-choice"
+                      : "choice"
+                  }
                   onClick={() => setAnswer("no")}
                 >
                   No, same expense
@@ -1464,7 +2468,9 @@ function ClarificationBox({
               {answer === "yes" && (
                 <textarea
                   value={explanation}
-                  onChange={(event) => setExplanation(event.target.value)}
+                  onChange={(event) =>
+                    setExplanation(event.target.value)
+                  }
                   placeholder="Explain what makes this a separate transaction…"
                   rows={4}
                 />
@@ -1476,13 +2482,17 @@ function ClarificationBox({
                 disabled={!answer || clarifying}
                 onClick={() => onClarify(question.code)}
               >
-                {clarifying ? "Submitting…" : "Submit clarification"}
+                {clarifying
+                  ? "Submitting…"
+                  : "Submit clarification"}
               </button>
             </>
           ) : (
             <div className="notice warning">
               <strong>Manual review required</strong>
-              <span>This clarification type must be handled by Finance.</span>
+              <span>
+                This clarification type must be handled by Finance.
+              </span>
             </div>
           )}
         </div>
@@ -1497,39 +2507,72 @@ function ValidationPanel({ validation, currency }) {
   return (
     <>
       <SectionTitle>Deterministic validation</SectionTitle>
-      <div className={validation.valid ? "validation-card valid" : "validation-card invalid"}>
+      <div
+        className={
+          validation.valid
+            ? "validation-card valid"
+            : "validation-card invalid"
+        }
+      >
         <div className="validation-heading">
           <div>
-            <strong>{validation.valid ? "Validation passed" : "Validation failed"}</strong>
+            <strong>
+              {validation.valid
+                ? "Validation passed"
+                : "Validation failed"}
+            </strong>
             <span>Go verification layer</span>
           </div>
-          <div className="validation-state">{validation.valid ? "PASS" : "FAIL"}</div>
+          <div className="validation-state">
+            {validation.valid ? "PASS" : "FAIL"}
+          </div>
         </div>
 
         {validation.line_item_sum !== undefined && (
           <div className="validation-metric">
             <span>Calculated line-item sum</span>
-            <strong>{formatMoney(validation.line_item_sum, currency)}</strong>
+            <strong>
+              {formatMoney(validation.line_item_sum, currency)}
+            </strong>
           </div>
         )}
 
-        {issues.length > 0 ? (
+        {issues.length > 0 && (
           <div className="issue-list">
             {issues.map((issue, index) => (
-              <div className="issue-row" key={issue.code || index}>
-                <span className={`issue-severity ${String(issue.severity || "INFO").toLowerCase()}`}>
+              <div
+                className="issue-row"
+                key={issue.code || index}
+              >
+                <span
+                  className={`issue-severity ${String(
+                    issue.severity || "INFO",
+                  ).toLowerCase()}`}
+                >
                   {issue.severity || "INFO"}
                 </span>
+
                 <div>
-                  <strong>{issue.code ? humanize(issue.code) : "Validation issue"}</strong>
-                  <p>{issue.message || issue.reason || JSON.stringify(issue)}</p>
+                  <strong>
+                    {issue.code
+                      ? humanize(issue.code)
+                      : "Validation issue"}
+                  </strong>
+                  <p>
+                    {issue.message ||
+                      issue.reason ||
+                      JSON.stringify(issue)}
+                  </p>
                 </div>
               </div>
             ))}
           </div>
-        ) : (
+        )}
+
+        {validation.valid && issues.length === 0 && (
           <p className="validation-copy">
-            Receipt totals, required fields and line-item consistency passed deterministic checks.
+            Receipt totals, required fields and line-item
+            consistency passed deterministic checks.
           </p>
         )}
       </div>
@@ -1553,11 +2596,17 @@ function LineItems({ extraction }) {
           <span>Qty</span>
           <span>Amount</span>
         </div>
+
         {items.map((item, index) => (
-          <div className="line-item" key={`${item.name}-${index}`}>
+          <div
+            className="line-item"
+            key={`${item.name}-${index}`}
+          >
             <span>{item.name || "Unnamed item"}</span>
             <span>{item.quantity || "—"}</span>
-            <strong>{formatMoney(item.amount, extraction.currency)}</strong>
+            <strong>
+              {formatMoney(item.amount, extraction.currency)}
+            </strong>
           </div>
         ))}
       </div>
@@ -1567,17 +2616,37 @@ function LineItems({ extraction }) {
 
 function Timeline({ events }) {
   if (!events?.length) {
-    return <div className="empty-timeline">No lifecycle events available.</div>;
+    return (
+      <div className="empty-timeline">
+        No lifecycle events are available.
+      </div>
+    );
   }
 
   return (
     <div className="timeline">
       {events.map((event, index) => (
-        <div className="timeline-item" key={event.id || `${event.event_type}-${index}`}>
+        <div
+          className="timeline-item"
+          key={`${event.event_id || event.id || index}`}
+        >
           <div className="timeline-marker" />
-          <div className="timeline-copy">
-            <strong>{humanize(event.event_type)}</strong>
-            <span>{formatDateTime(event.created_at)}</span>
+          <div>
+            <strong>
+              {humanize(
+                event.event_type || event.type || "EVENT",
+              )}
+            </strong>
+            <span>
+              {formatDateTime(
+                event.created_at ||
+                  event.occurred_at ||
+                  event.timestamp,
+              )}
+            </span>
+            {event.payload && (
+              <EventPayload payload={event.payload} />
+            )}
           </div>
         </div>
       ))}
@@ -1585,39 +2654,765 @@ function Timeline({ events }) {
   );
 }
 
-function ReportList({ reports, onOpen, activeReportID, admin = false }) {
+function EventPayload({ payload }) {
+  const value =
+    typeof payload === "string"
+      ? safeJSONParse(payload)
+      : payload;
+
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const note = value.note;
+  const reviewer = value.reviewer;
+  const action = value.action;
+
+  if (!note && !reviewer && !action) {
+    return null;
+  }
+
   return (
-    <div className="report-list">
+    <div className="timeline-payload">
+      {action && <strong>{humanize(action)}</strong>}
+      {reviewer && <span>Reviewer: {reviewer}</span>}
+      {note && <p>{note}</p>}
+    </div>
+  );
+}
+
+function PolicyManagement({
+  policies,
+  activePolicy,
+  selectedPolicy,
+  onOpenPolicy,
+  onRefresh,
+  onCreate,
+  onSave,
+  onPublish,
+  loading,
+  saving,
+  error,
+}) {
+  const [creating, setCreating] = useState(false);
+  const [actor, setActor] = useState("Finance User");
+  const [name, setName] = useState(
+    activePolicy?.name || "Company Expense Policy",
+  );
+  const [effectiveFrom, setEffectiveFrom] = useState(
+    selectedPolicy?.effective_from || todayDateString(),
+  );
+  const [currency, setCurrency] = useState(
+    selectedPolicy?.currency || activePolicy?.currency || "USD",
+  );
+  const [rules, setRules] = useState(() =>
+    Array.isArray(selectedPolicy?.rules)
+      ? selectedPolicy.rules.map((rule) => ({ ...rule }))
+      : activePolicyToRules(activePolicy),
+  );
+
+  const isDraft = selectedPolicy?.status === "DRAFT";
+
+  function startCreating() {
+    setName(activePolicy?.name || "Company Expense Policy");
+    setCurrency(activePolicy?.currency || "USD");
+    setEffectiveFrom(todayDateString());
+    setRules(activePolicyToRules(activePolicy));
+    setCreating(true);
+  }
+
+  function updateRule(index, field, value) {
+    setRules((current) =>
+      current.map((rule, itemIndex) => {
+        if (itemIndex !== index) {
+          return rule;
+        }
+
+        if (field === "allowed") {
+          return {
+            ...rule,
+            allowed: !!value,
+            max_amount: value
+              ? Number(rule.max_amount || 0)
+              : 0,
+          };
+        }
+
+        if (field === "max_amount") {
+          return {
+            ...rule,
+            max_amount: Number(value),
+          };
+        }
+
+        return {
+          ...rule,
+          [field]: value,
+        };
+      }),
+    );
+  }
+
+  function addRule() {
+    setRules((current) => [
+      ...current,
+      {
+        employee_grade: "B2",
+        category: "",
+        allowed: true,
+        max_amount: 1,
+      },
+    ]);
+  }
+
+  function removeRule(index) {
+    setRules((current) =>
+      current.filter((_, itemIndex) => itemIndex !== index),
+    );
+  }
+
+  async function handleCreate(event) {
+    event.preventDefault();
+
+    await onCreate({
+      name: name.trim(),
+      currency: currency.trim().toUpperCase(),
+      effective_from: effectiveFrom,
+      created_by: actor.trim(),
+      rules: sanitizePolicyRules(rules),
+    });
+
+    setCreating(false);
+  }
+
+  async function handleSave() {
+    if (!selectedPolicy?.policy_id) {
+      return;
+    }
+
+    await onSave(selectedPolicy.policy_id, {
+      currency: currency.trim().toUpperCase(),
+      effective_from: effectiveFrom,
+      rules: sanitizePolicyRules(rules),
+    });
+  }
+
+  async function handlePublish() {
+    if (!selectedPolicy?.policy_id || !actor.trim()) {
+      return;
+    }
+
+    await onPublish(selectedPolicy.policy_id, actor.trim());
+  }
+
+  return (
+    <section className="policy-layout">
+      {error && <ErrorBanner message={error} />}
+
+      <div className="policy-overview-grid">
+        <section className="panel active-policy-card">
+          <PanelHeader
+            eyebrow="ACTIVE POLICY"
+            title={activePolicy?.name || "No active policy"}
+            aside={
+              activePolicy?.version ? (
+                <StatusBadge status="PUBLISHED" />
+              ) : null
+            }
+          />
+
+          {activePolicy ? (
+            <>
+              <div className="active-policy-hero">
+                <div>
+                  <span>Published version</span>
+                  <strong>v{activePolicy.version}</strong>
+                </div>
+                <div>
+                  <span>Currency</span>
+                  <strong>{activePolicy.currency}</strong>
+                </div>
+                <div>
+                  <span>Configured grades</span>
+                  <strong>
+                    {Object.keys(activePolicy.limits || {}).length}
+                  </strong>
+                </div>
+                <div>
+                  <span>Rules</span>
+                  <strong>
+                    {activePolicyToRules(activePolicy).length}
+                  </strong>
+                </div>
+              </div>
+
+              <p className="policy-help">
+                This is the policy currently used for new claims,
+                clarification approvals and Finance approvals.
+              </p>
+            </>
+          ) : (
+            <EmptyState
+              title="No published policy"
+              text="Publish a draft before automatic reimbursement decisions can use it."
+              compact
+            />
+          )}
+        </section>
+
+        <section className="panel policy-actions-card">
+          <PanelHeader
+            eyebrow="POLICY OPERATIONS"
+            title="Version safely"
+          />
+
+          <p className="policy-help">
+            Published versions are immutable. Create a draft, edit the
+            rules and publish it when Finance is ready. Existing claim
+            decisions remain historically intact.
+          </p>
+
+          <div className="policy-top-actions">
+            <button
+              type="button"
+              className="primary-button"
+              onClick={startCreating}
+            >
+              Create draft from active
+            </button>
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={() => onRefresh()}
+              disabled={loading}
+            >
+              {loading ? "Refreshing…" : "Refresh policies"}
+            </button>
+          </div>
+        </section>
+      </div>
+
+      {creating && (
+        <section className="panel create-policy-panel">
+          <PanelHeader
+            eyebrow="NEW POLICY VERSION"
+            title="Create draft"
+            aside={
+              <button
+                type="button"
+                className="text-button"
+                onClick={() => setCreating(false)}
+              >
+                Cancel
+              </button>
+            }
+          />
+
+          <form onSubmit={handleCreate}>
+            <div className="form-grid three">
+              <Field
+                label="Policy name"
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+                required
+              />
+              <Field
+                label="Currency"
+                value={currency}
+                onChange={(event) =>
+                  setCurrency(event.target.value.toUpperCase())
+                }
+                required
+              />
+              <Field
+                label="Effective from"
+                type="date"
+                value={effectiveFrom}
+                onChange={(event) =>
+                  setEffectiveFrom(event.target.value)
+                }
+                required
+              />
+              <Field
+                label="Created by"
+                value={actor}
+                onChange={(event) => setActor(event.target.value)}
+                required
+              />
+            </div>
+
+            <PolicyRuleEditor
+              rules={rules}
+              editable
+              updateRule={updateRule}
+              addRule={addRule}
+              removeRule={removeRule}
+              currency={currency}
+            />
+
+            <button
+              className="primary-button compact"
+              type="submit"
+              disabled={saving}
+            >
+              {saving ? "Creating…" : "Create draft"}
+            </button>
+          </form>
+        </section>
+      )}
+
+      <section className="policy-main-grid">
+        <section className="panel policy-version-list-panel">
+          <PanelHeader
+            eyebrow="VERSION HISTORY"
+            title="Policy versions"
+          />
+
+          {loading && !policies.length ? (
+            <LoadingState text="Loading policies…" compact />
+          ) : policies.length ? (
+            <div className="policy-version-list">
+              {policies.map((version) => (
+                <button
+                  type="button"
+                  key={version.policy_id}
+                  className={
+                    selectedPolicy?.policy_id === version.policy_id
+                      ? "policy-version-row active"
+                      : "policy-version-row"
+                  }
+                  onClick={() => onOpenPolicy(version.policy_id)}
+                >
+                  <div>
+                    <strong>
+                      {version.name} · v{version.version}
+                    </strong>
+                    <span>
+                      Effective {version.effective_from} ·{" "}
+                      {version.currency}
+                    </span>
+                  </div>
+                  <StatusBadge status={version.status} />
+                </button>
+              ))}
+            </div>
+          ) : (
+            <EmptyState
+              title="No policy versions"
+              text="Create a draft to begin."
+              compact
+            />
+          )}
+        </section>
+
+        <section className="panel policy-editor-panel">
+          <PanelHeader
+            eyebrow={isDraft ? "DRAFT EDITOR" : "POLICY DETAIL"}
+            title={
+              selectedPolicy
+                ? `${selectedPolicy.name} · v${selectedPolicy.version}`
+                : "Select a version"
+            }
+            aside={
+              selectedPolicy && (
+                <StatusBadge status={selectedPolicy.status} />
+              )
+            }
+          />
+
+          {!selectedPolicy ? (
+            <EmptyState
+              title="Select a policy version"
+              text="Choose a version from the left to inspect or edit its rules."
+            />
+          ) : (
+            <>
+              <div className="policy-metadata-grid">
+                <Detail
+                  label="Policy ID"
+                  value={shortID(selectedPolicy.policy_id)}
+                />
+                <Detail
+                  label="Created by"
+                  value={selectedPolicy.created_by || "—"}
+                />
+                <Detail
+                  label="Created"
+                  value={formatDateTime(selectedPolicy.created_at)}
+                />
+                <Detail
+                  label="Published by"
+                  value={selectedPolicy.published_by || "—"}
+                />
+              </div>
+
+              <div className="policy-editor-controls">
+                <Field
+                  label="Currency"
+                  value={currency}
+                  disabled={!isDraft}
+                  onChange={(event) =>
+                    setCurrency(event.target.value.toUpperCase())
+                  }
+                />
+                <Field
+                  label="Effective from"
+                  type="date"
+                  value={effectiveFrom}
+                  disabled={!isDraft}
+                  onChange={(event) =>
+                    setEffectiveFrom(event.target.value)
+                  }
+                />
+                {isDraft && (
+                  <Field
+                    label="Finance actor"
+                    value={actor}
+                    onChange={(event) => setActor(event.target.value)}
+                    placeholder="Finance User"
+                  />
+                )}
+              </div>
+
+              <PolicyRuleEditor
+                rules={rules}
+                editable={isDraft}
+                updateRule={updateRule}
+                addRule={addRule}
+                removeRule={removeRule}
+                currency={currency}
+              />
+
+              {isDraft && (
+                <div className="policy-editor-actions">
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    onClick={handleSave}
+                    disabled={saving}
+                  >
+                    {saving ? "Saving…" : "Save draft"}
+                  </button>
+                  <button
+                    type="button"
+                    className="approve-button"
+                    onClick={handlePublish}
+                    disabled={saving || !actor.trim()}
+                  >
+                    {saving ? "Publishing…" : "Publish & activate"}
+                  </button>
+                </div>
+              )}
+
+              {!isDraft && (
+                <div className="notice">
+                  <strong>Immutable historical version</strong>
+                  <span>
+                    Published and retired policies remain read-only so
+                    claim decisions can be audited against the version
+                    that produced them.
+                  </span>
+                </div>
+              )}
+            </>
+          )}
+        </section>
+      </section>
+    </section>
+  );
+}
+
+function PolicyRuleEditor({
+  rules,
+  editable,
+  updateRule,
+  addRule,
+  removeRule,
+  currency,
+}) {
+  return (
+    <div className="policy-rules-section">
+      <div className="policy-rules-heading">
+        <div>
+          <span className="detail-kicker">REIMBURSEMENT RULES</span>
+          <strong>
+            {rules.length} rule{rules.length === 1 ? "" : "s"}
+          </strong>
+        </div>
+        {editable && (
+          <button
+            type="button"
+            className="secondary-button compact-secondary"
+            onClick={addRule}
+          >
+            + Add rule
+          </button>
+        )}
+      </div>
+
+      <div className="policy-rule-table">
+        <div className="policy-rule-row policy-rule-header">
+          <span>Grade</span>
+          <span>Category</span>
+          <span>Allowed</span>
+          <span>Maximum ({currency || "USD"})</span>
+          <span />
+        </div>
+
+        {rules.map((rule, index) => (
+          <div
+            className="policy-rule-row"
+            key={`${rule.employee_grade}-${rule.category}-${index}`}
+          >
+            {editable ? (
+              <input
+                value={rule.employee_grade}
+                onChange={(event) =>
+                  updateRule(
+                    index,
+                    "employee_grade",
+                    event.target.value,
+                  )
+                }
+              />
+            ) : (
+              <strong>{rule.employee_grade}</strong>
+            )}
+
+            {editable ? (
+              <input
+                value={rule.category}
+                onChange={(event) =>
+                  updateRule(index, "category", event.target.value)
+                }
+              />
+            ) : (
+              <span>{rule.category}</span>
+            )}
+
+            {editable ? (
+              <label className="policy-toggle">
+                <input
+                  type="checkbox"
+                  checked={Boolean(rule.allowed)}
+                  onChange={(event) =>
+                    updateRule(
+                      index,
+                      "allowed",
+                      event.target.checked,
+                    )
+                  }
+                />
+                <span>{rule.allowed ? "Allowed" : "Blocked"}</span>
+              </label>
+            ) : (
+              <StatusBadge
+                status={rule.allowed ? "ALLOWED" : "NOT_ALLOWED"}
+              />
+            )}
+
+            {editable ? (
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                disabled={!rule.allowed}
+                value={rule.max_amount}
+                onChange={(event) =>
+                  updateRule(
+                    index,
+                    "max_amount",
+                    event.target.value,
+                  )
+                }
+              />
+            ) : (
+              <strong>
+                {rule.allowed
+                  ? formatMoney(rule.max_amount, currency)
+                  : "—"}
+              </strong>
+            )}
+
+            {editable ? (
+              <button
+                type="button"
+                className="icon-button"
+                onClick={() => removeRule(index)}
+                aria-label="Remove policy rule"
+              >
+                ×
+              </button>
+            ) : (
+              <span />
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ReportList({
+  reports,
+  onOpen,
+  activeReportID,
+  admin = false,
+}) {
+  return (
+    <div
+      className={
+        admin
+          ? "report-list finance-report-list"
+          : "report-list employee-report-list"
+      }
+    >
       {reports.map((report) => {
-        const id = report.report_id || report.id;
-        const currency = report.items?.find((item) => item.currency)?.currency || "USD";
+        const itemCount =
+          report.item_count ?? report.items?.length ?? 0;
+        const currency =
+          report.items?.find((item) => item.currency)?.currency ||
+          "USD";
+        const reviewItemCount = (report.items || []).filter(
+          (item) => {
+            const status = String(
+              item.status || "",
+            ).toUpperCase();
+
+            return (
+              reviewStatuses.has(status) ||
+              actionStatuses.has(status)
+            );
+          },
+        ).length;
+        const active =
+          report.report_id === activeReportID;
 
         return (
           <button
             type="button"
-            className={id === activeReportID ? "report-list-item active" : "report-list-item"}
-            key={id}
-            onClick={() => onOpen(id)}
+            className={[
+              "report-summary-card",
+              admin
+                ? "finance-report-card"
+                : "employee-report-card",
+              active ? "active" : "",
+            ]
+              .filter(Boolean)
+              .join(" ")}
+            key={report.report_id}
+            onClick={() => onOpen(report.report_id)}
           >
-            <div className="report-list-top">
-              <div>
-                <strong>{report.title || "Expense report"}</strong>
-                <span>{admin ? report.employee?.name || report.employee_name || "Employee" : formatDateTime(report.created_at)}</span>
+            <div className="report-card-top">
+              <div className="report-card-identity">
+                <div
+                  className={`report-card-mark ${statusClass(
+                    report.status,
+                  )}`}
+                >
+                  {admin ? "F" : "R"}
+                </div>
+
+                <div className="report-card-title">
+                  <strong>
+                    {report.title || "Expense report"}
+                  </strong>
+
+                  {admin ? (
+                    <span>
+                      {report.employee?.name || "Employee"}
+                      {report.employee?.id
+                        ? ` · ${report.employee.id}`
+                        : ""}
+                    </span>
+                  ) : (
+                    <span>
+                      {formatDateTime(report.created_at)}
+                    </span>
+                  )}
+                </div>
               </div>
+
               <StatusBadge status={report.status} />
             </div>
-            <div className="report-list-bottom">
-              {admin && (
-                <span className="employee-chip">
-                  {report.employee?.id || report.employee_id || "—"}
+
+            {!admin && report.purpose && (
+              <p className="report-card-purpose">
+                {report.purpose}
+              </p>
+            )}
+
+            {admin && (
+              <div
+                className={
+                  reviewItemCount > 0
+                    ? "finance-review-signal active"
+                    : "finance-review-signal"
+                }
+              >
+                <span className="finance-review-signal-dot" />
+                <span>
+                  {reviewItemCount > 0
+                    ? `${reviewItemCount} receipt${
+                        reviewItemCount === 1 ? "" : "s"
+                      } need attention`
+                    : "No receipt currently needs manual action"}
                 </span>
-              )}
-              <span>{report.item_count ?? report.items?.length ?? 0} receipt{(report.item_count ?? report.items?.length ?? 0) === 1 ? "" : "s"}</span>
-              <strong>{formatMoney(report.total_reimbursable, currency)}</strong>
+              </div>
+            )}
+
+            <div className="report-card-metrics">
+              <ReportCardMetric
+                label="Receipts"
+                value={String(itemCount)}
+              />
+              <ReportCardMetric
+                label="Claimed"
+                value={formatMoney(
+                  report.total_claimed,
+                  currency,
+                )}
+              />
+              <ReportCardMetric
+                label="Reimbursable"
+                value={formatMoney(
+                  report.total_reimbursable,
+                  currency,
+                )}
+                positive
+              />
+            </div>
+
+            <div className="report-card-footer">
+              <span>
+                {admin
+                  ? formatDateTime(report.created_at)
+                  : shortID(report.report_id)}
+              </span>
+
+              <strong>
+                {admin ? "Open review" : "View report"}
+                <span aria-hidden="true"> →</span>
+              </strong>
             </div>
           </button>
         );
       })}
+    </div>
+  );
+}
+
+function ReportCardMetric({
+  label,
+  value,
+  positive = false,
+}) {
+  return (
+    <div className="report-card-metric">
+      <span>{label}</span>
+      <strong className={positive ? "positive" : ""}>
+        {value}
+      </strong>
     </div>
   );
 }
@@ -1629,24 +3424,14 @@ function PanelHeader({ eyebrow, title, aside }) {
         <span className="panel-eyebrow">{eyebrow}</span>
         <h2>{title}</h2>
       </div>
-      {aside && <div className="panel-aside">{aside}</div>}
-    </div>
-  );
-}
-
-function Metric({ label, value, sub }) {
-  return (
-    <div className="hero-metric">
-      <span>{label}</span>
-      <strong>{value}</strong>
-      <small>{sub}</small>
+      {aside && <div>{aside}</div>}
     </div>
   );
 }
 
 function KpiCard({ label, value, tone }) {
   return (
-    <div className={`kpi-card ${tone}`}>
+    <div className={`kpi-card ${tone || ""}`}>
       <span>{label}</span>
       <strong>{value}</strong>
     </div>
@@ -1686,18 +3471,25 @@ function TextAreaField({ label, ...props }) {
 
 function Detail({ label, value, strong = false }) {
   return (
-    <div className={strong ? "detail strong" : "detail"}>
+    <div className="detail">
       <span>{label}</span>
-      <strong>{value || "—"}</strong>
+      <strong className={strong ? "detail-strong" : ""}>
+        {value ?? "—"}
+      </strong>
     </div>
   );
 }
 
-function SummaryMetric({ label, value, mono = false, accent = false }) {
+function SummaryMetric({
+  label,
+  value,
+  mono = false,
+  accent = false,
+}) {
   return (
     <div className={accent ? "summary-metric accent" : "summary-metric"}>
       <span>{label}</span>
-      <strong className={mono ? "mono" : ""}>{value || "—"}</strong>
+      <strong className={mono ? "mono" : ""}>{value}</strong>
     </div>
   );
 }
@@ -1706,14 +3498,16 @@ function EvidenceRow({ label, value, mono = false }) {
   return (
     <div className="evidence-row">
       <span>{label}</span>
-      <strong className={mono ? "mono" : ""}>{value || "—"}</strong>
+      <strong className={mono ? "mono" : ""}>
+        {value || "—"}
+      </strong>
     </div>
   );
 }
 
 function TraceStep({ label, value, state }) {
   return (
-    <div className={`trace-step ${state}`}>
+    <div className={`trace-step ${state || ""}`}>
       <span>{label}</span>
       <strong>{value}</strong>
     </div>
@@ -1734,7 +3528,7 @@ function StatusBadge({ status }) {
 
 function ErrorBanner({ message }) {
   return (
-    <div className="error-banner">
+    <div className="global-error">
       <div className="error-icon">!</div>
       <div>
         <strong>Something needs attention</strong>
@@ -1747,15 +3541,11 @@ function ErrorBanner({ message }) {
 function EmptyResult() {
   return (
     <div className="empty-result">
-      <div className="empty-illustration">
-        <span>01</span>
-        <span>02</span>
-        <span>03</span>
-      </div>
-      <h3>Your report decision will appear here</h3>
+      <div className="empty-icon">◎</div>
+      <h3>Your report result will appear here</h3>
       <p>
-        Submit one or more receipts to see extraction, validation, duplicate controls,
-        reimbursement policy and the business event trail.
+        Submit one or more receipts to see reimbursement status,
+        policy outcome and any action required from you.
       </p>
     </div>
   );
@@ -1764,7 +3554,7 @@ function EmptyResult() {
 function EmptyState({ title, text, compact = false }) {
   return (
     <div className={compact ? "empty-state compact" : "empty-state"}>
-      <div className="empty-diamond">◇</div>
+      <div className="empty-state-icon">○</div>
       <strong>{title}</strong>
       <p>{text}</p>
     </div>
@@ -1783,19 +3573,41 @@ function LoadingState({ text, compact = false }) {
 function statusClass(status) {
   const value = String(status || "").toUpperCase();
 
-  if (["APPROVED", "COMPLETED", "YES"].includes(value)) {
+  if (
+    [
+      "APPROVED",
+      "COMPLETED",
+      "YES",
+      "PUBLISHED",
+      "ALLOWED",
+    ].includes(value)
+  ) {
     return "success";
   }
 
-  if (["LIMIT_EXCEEDED", "CLARIFICATION_REQUIRED", "ACTION_REQUIRED", "PROCESSING"].includes(value)) {
+  if (
+    [
+      "LIMIT_EXCEEDED",
+      "CLARIFICATION_REQUIRED",
+      "ACTION_REQUIRED",
+      "MANUAL_REVIEW",
+      "REVIEW_REQUIRED",
+      "HUMAN_REVIEW_REQUIRED",
+      "CURRENCY_MISMATCH",
+      "DRAFT",
+    ].includes(value)
+  ) {
     return "warning";
   }
 
-  if (["MANUAL_REVIEW", "REVIEW_REQUIRED", "HUMAN_REVIEW_REQUIRED", "CURRENCY_MISMATCH"].includes(value)) {
-    return "review";
-  }
-
-  if (["DUPLICATE_DETECTED", "NOT_ALLOWED", "REJECTED", "PARTIALLY_REJECTED", "NO"].includes(value)) {
+  if (
+    [
+      "REJECTED",
+      "DUPLICATE_DETECTED",
+      "NOT_ALLOWED",
+      "NO",
+    ].includes(value)
+  ) {
     return "danger";
   }
 
@@ -1818,16 +3630,86 @@ function normalizeListPayload(value) {
   return [];
 }
 
+function activePolicyToRules(policy) {
+  const rules = [];
+
+  Object.entries(policy?.limits || {}).forEach(
+    ([employeeGrade, categories]) => {
+      Object.entries(categories || {}).forEach(
+        ([category, rule]) => {
+          rules.push({
+            employee_grade: employeeGrade,
+            category,
+            allowed: Boolean(rule?.allowed),
+            max_amount: Number(rule?.max_amount || 0),
+          });
+        },
+      );
+    },
+  );
+
+  return rules.sort((a, b) => {
+    const gradeCompare = a.employee_grade.localeCompare(
+      b.employee_grade,
+    );
+
+    if (gradeCompare !== 0) {
+      return gradeCompare;
+    }
+
+    return a.category.localeCompare(b.category);
+  });
+}
+
+function sanitizePolicyRules(rules) {
+  return (rules || []).map((rule) => ({
+    employee_grade: String(rule.employee_grade || "").trim(),
+    category: String(rule.category || "").trim(),
+    allowed: !!rule.allowed,
+    max_amount: rule.allowed
+      ? Number(rule.max_amount || 0)
+      : 0,
+  }));
+}
+
+function employeeStatusMessage(status) {
+  const value = String(status || "").toUpperCase();
+
+  const messages = {
+    APPROVED: "This expense is within policy and is fully reimbursable.",
+    LIMIT_EXCEEDED:
+      "This expense is valid, but reimbursement is capped by policy.",
+    CLARIFICATION_REQUIRED:
+      "We need one answer from you before the claim can continue.",
+    MANUAL_REVIEW:
+      "Finance needs to verify this claim before any reimbursement is authorized.",
+    HUMAN_REVIEW_REQUIRED:
+      "The document needs human verification before reimbursement.",
+    DUPLICATE_DETECTED:
+      "This expense was identified as a duplicate and will not be reimbursed.",
+    REJECTED:
+      "This claim was rejected and has no reimbursement.",
+    NOT_ALLOWED:
+      "This category is not reimbursable under the applicable policy.",
+    CURRENCY_MISMATCH:
+      "Finance needs to review the currency before reimbursement.",
+  };
+
+  return messages[value] || "Your claim has been processed.";
+}
+
 function shortModelName(model) {
   if (!model) {
     return "—";
   }
 
-  return model.replace("qwen3-vl:", "Qwen3-VL ");
+  return String(model).replace(":instruct", "");
 }
 
 function formatMoney(amount, currency) {
-  if (amount === undefined || amount === null || Number.isNaN(Number(amount))) {
+  const numeric = Number(amount);
+
+  if (!Number.isFinite(numeric)) {
     return "—";
   }
 
@@ -1836,22 +3718,24 @@ function formatMoney(amount, currency) {
       style: "currency",
       currency: currency || "USD",
       maximumFractionDigits: 2,
-    }).format(Number(amount));
+    }).format(numeric);
   } catch {
-    return `${currency || ""} ${Number(amount).toFixed(2)}`.trim();
+    return `${currency || ""} ${numeric.toFixed(2)}`.trim();
   }
 }
 
 function formatFileSize(bytes) {
-  if (bytes < 1024) {
-    return `${bytes} B`;
+  const value = Number(bytes) || 0;
+
+  if (value < 1024) {
+    return `${value} B`;
   }
 
-  if (bytes < 1024 * 1024) {
-    return `${(bytes / 1024).toFixed(1)} KB`;
+  if (value < 1024 * 1024) {
+    return `${(value / 1024).toFixed(1)} KB`;
   }
 
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(value / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function formatDateTime(value) {
@@ -1862,47 +3746,64 @@ function formatDateTime(value) {
   const date = new Date(value);
 
   if (Number.isNaN(date.getTime())) {
-    return value;
+    return String(value);
   }
 
-  return date.toLocaleString([], {
+  return new Intl.DateTimeFormat("en-IN", {
     dateStyle: "medium",
     timeStyle: "short",
-  });
+  }).format(date);
 }
 
 function humanize(value) {
   if (!value) {
-    return "";
-  }
-
-  return String(value)
-    .replaceAll("_", " ")
-    .toLowerCase()
-    .replace(/\b\w/g, (character) => character.toUpperCase());
-}
-
-function shortID(value) {
-  if (!value) {
     return "—";
   }
 
-  const stringValue = String(value);
+  return String(value)
+    .replace(/_/g, " ")
+    .toLowerCase()
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
 
-  if (stringValue.length <= 26) {
-    return stringValue;
+function shortID(value) {
+  const text = String(value || "");
+
+  if (!text) {
+    return "—";
   }
 
-  return `${stringValue.slice(0, 21)}…`;
+  if (text.length <= 18) {
+    return text;
+  }
+
+  return `${text.slice(0, 8)}…${text.slice(-7)}`;
 }
 
 function fileExtension(name) {
-  const extension = String(name || "")
-    .split(".")
-    .pop()
-    ?.toUpperCase();
+  const parts = String(name || "").split(".");
 
-  return extension || "FILE";
+  if (parts.length < 2) {
+    return "FILE";
+  }
+
+  return parts.pop().toUpperCase();
+}
+
+function todayDateString() {
+  const date = new Date();
+  const local = new Date(
+    date.getTime() - date.getTimezoneOffset() * 60000,
+  );
+  return local.toISOString().slice(0, 10);
+}
+
+function safeJSONParse(value) {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
 }
 
 export default App;

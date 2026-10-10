@@ -6,16 +6,14 @@
     BlinkMacSystemFont,
     "Segoe UI",
     sans-serif;
-  color: #172033;
-  background: #f4f7fb;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
+  background: #f4f6fa;
+  color: #15171c;
 }
 
 html {
-  min-width: 320px;
-  min-height: 100%;
-  background: #f4f7fb;
+  background: #f4f6fa;
 }
 
 body {
@@ -35,11 +33,7 @@ button {
   cursor: pointer;
 }
 
-button:disabled {
-  cursor: not-allowed;
-}
-
 ::selection {
-  background: #cdd7ff;
-  color: #10182a;
+  background: #cdd2ff;
+  color: #17191f;
 }
