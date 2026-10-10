@@ -1,5 +1,9 @@
+const configuredAPIBaseURL =
+  import.meta.env.VITE_API_BASE_URL?.trim();
+
 const API_BASE_URL =
-  import.meta.env.VITE_API_BASE_URL || "http://localhost:8080";
+  configuredAPIBaseURL ||
+  (import.meta.env.DEV ? "http://localhost:8080" : "");
 
 async function parseResponse(response) {
   const text = await response.text();

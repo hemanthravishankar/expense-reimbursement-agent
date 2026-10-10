@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/hemanth-shankar/expense-agent/internal/models"
@@ -55,12 +57,30 @@ type chatResponse struct {
 
 func NewOllamaClient() *OllamaClient {
 	return &OllamaClient{
-		BaseURL: OllamaURL,
+		BaseURL: resolveOllamaURL(),
 		Model:   VisionModel,
 		Client: &http.Client{
 			Timeout: 5 * time.Minute,
 		},
 	}
+}
+
+func resolveOllamaURL() string {
+	if endpoint := strings.TrimSpace(os.Getenv("OLLAMA_URL")); endpoint != "" {
+		return strings.TrimRight(endpoint, "/")
+	}
+
+	baseURL := strings.TrimSpace(os.Getenv("OLLAMA_BASE_URL"))
+	if baseURL == "" {
+		return OllamaURL
+	}
+
+	baseURL = strings.TrimRight(baseURL, "/")
+	if strings.HasSuffix(baseURL, "/api/chat") {
+		return baseURL
+	}
+
+	return baseURL + "/api/chat"
 }
 
 func (o *OllamaClient) Generate(

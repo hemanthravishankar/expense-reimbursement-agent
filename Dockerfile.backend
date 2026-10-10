@@ -1,0 +1,47 @@
+# syntax=docker/dockerfile:1
+
+FROM golang:1.27-bookworm AS builder
+
+WORKDIR /src
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+RUN CGO_ENABLED=0 GOOS=linux go build \
+    -trimpath \
+    -ldflags="-s -w" \
+    -o /out/expense-agent-api \
+    ./cmd/api
+
+
+FROM debian:bookworm-slim AS runtime
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        poppler-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN groupadd --system expense-agent \
+    && useradd \
+        --system \
+        --gid expense-agent \
+        --home-dir /app \
+        --shell /usr/sbin/nologin \
+        expense-agent
+
+WORKDIR /app
+
+COPY --from=builder /out/expense-agent-api /usr/local/bin/expense-agent-api
+
+RUN mkdir -p /app/data/audit /app/data/documents \
+    && chown -R expense-agent:expense-agent /app
+
+USER expense-agent
+
+EXPOSE 8080
+
+ENTRYPOINT ["expense-agent-api"]
