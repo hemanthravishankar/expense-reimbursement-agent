@@ -6,9 +6,9 @@ This deployment is intended for local evaluation and reproducible demos.
 
 Docker Compose runs:
 
-- PostgreSQL
-- Expense Agent Go API
-- React frontend served by Nginx
+- PostgreSQL 16;
+- Expense Agent Go API;
+- React frontend served by Nginx.
 
 Ollama runs on the host machine.
 
@@ -27,34 +27,28 @@ Frontend / Nginx :5173
                                       +---- host Ollama :11434
 ```
 
-The frontend uses same-origin API requests in the production build. Nginx proxies those calls to the API container, so no browser-side container hostname is exposed.
-
 ## Prerequisites
-
-Required:
 
 - Docker Desktop / Docker Engine with Compose v2
 - Ollama running on the host
 - `qwen3-vl:4b-instruct`
 - `qwen3-vl:8b-instruct`
 
-Install/pull the models:
+Install/pull:
 
 ```bash
 ollama pull qwen3-vl:4b-instruct
 ollama pull qwen3-vl:8b-instruct
 ```
 
-Verify Ollama:
+Verify:
 
 ```bash
 ollama list
 curl http://localhost:11434/api/tags
 ```
 
-## 1. Preflight
-
-From the repository root:
+## Preflight
 
 ```bash
 ./scripts/docker-preflight.sh
@@ -67,41 +61,39 @@ Host Ollama and required vision models are ready.
 Docker Compose is ready.
 ```
 
-## 2. Start the stack
+## Start
 
 ```bash
 docker compose up --build -d
 ```
 
-Watch startup:
+Check:
 
 ```bash
 docker compose ps
-docker compose logs -f api
 ```
 
-The API automatically creates its PostgreSQL schema and seeds the default published reimbursement policy when the database is empty.
+Expected services:
 
-## 3. Verify
+```text
+postgres  healthy
+api       healthy
+frontend  healthy
+```
+
+## Smoke test
 
 ```bash
 ./scripts/docker-smoke-test.sh
 ```
 
-Or manually:
+It validates:
 
-```bash
-curl http://localhost:8080/healthz
-curl http://localhost:8080/api/v1/admin/policies/active
-```
+- API health;
+- active policy;
+- frontend availability.
 
-Open:
-
-```text
-http://localhost:5173
-```
-
-## Service endpoints
+## Endpoints
 
 | Service | URL |
 |---|---|
@@ -110,109 +102,109 @@ http://localhost:5173
 | Host Ollama | `http://localhost:11434` |
 | PostgreSQL | internal Compose network only |
 
-PostgreSQL is intentionally not published to a host port. Use:
+## PostgreSQL access
+
+The database port is intentionally not published to the host.
+
+Use:
 
 ```bash
 docker compose exec postgres \
   psql -U expense_agent -d expense_agent
 ```
 
-## Data persistence
+## Persistence
 
-Two named volumes are used:
+Named volumes:
 
 ```text
 postgres_data
 expense_data
 ```
 
-`postgres_data` stores:
+`postgres_data` contains business state and policies.
 
-- claims
-- report lifecycle
-- Finance events
-- policy versions/rules
+`expense_data` contains receipt evidence and technical audit files.
 
-`expense_data` stores:
-
-- original uploaded evidence
-- technical audit JSON
-
-A normal stop preserves the data:
+A normal stop preserves volumes:
 
 ```bash
 docker compose down
 ```
 
-## Clean reset
-
-For a completely clean demo/evaluation database and evidence store:
+## Clean reproducible reset
 
 ```bash
 docker compose down -v
 docker compose up --build -d
 ```
 
-Because the application initializes its own schema and default policy, the system returns to a reproducible baseline automatically.
+This removes the Compose database/evidence volumes and recreates the application from the baseline.
 
-**Warning:** `docker compose down -v` permanently removes the Compose database and evidence volumes.
+The API schema initialization seeds the default published V1 policy when no published policy exists.
+
+**Warning:** `docker compose down -v` permanently deletes the Compose volumes.
 
 ## Logs
 
-All services:
+All:
 
 ```bash
 docker compose logs -f
 ```
 
-API only:
+API:
 
 ```bash
 docker compose logs -f api
 ```
 
-PostgreSQL only:
+PostgreSQL:
 
 ```bash
 docker compose logs -f postgres
 ```
 
-Frontend/Nginx:
+Frontend:
 
 ```bash
 docker compose logs -f frontend
 ```
 
-## Rebuild after source changes
-
-Backend or frontend source changes:
+## Rebuild
 
 ```bash
 docker compose up --build -d
 ```
 
-Force a clean image rebuild:
+No-cache rebuild:
 
 ```bash
 docker compose build --no-cache
 docker compose up -d
 ```
 
-## Ollama connectivity troubleshooting
+## Ollama endpoint
 
-The API container uses:
+Compose sets the API default to:
 
 ```text
 OLLAMA_BASE_URL=http://host.docker.internal:11434
 ```
 
-Check host Ollama first:
+The Go client converts the base URL to `/api/chat`.
+
+A complete endpoint can also be supplied through `OLLAMA_URL`.
+
+## Docker-to-host troubleshooting
+
+Check host:
 
 ```bash
 curl http://localhost:11434/api/tags
 ```
 
-Then test Docker-to-host connectivity:
+Check from a temporary container:
 
 ```bash
 docker run --rm \
@@ -221,31 +213,18 @@ docker run --rm \
   -fsS http://host.docker.internal:11434/api/tags
 ```
 
-If host Ollama is intentionally running on another address:
+## Production scope
 
-```bash
-cp .env.docker.example .env.docker
-```
+The Compose configuration is a reproducible local evaluation deployment.
 
-Edit `OLLAMA_BASE_URL`, then start Compose with:
+For production, add:
 
-```bash
-docker compose --env-file .env.docker up --build -d
-```
-
-## Security scope
-
-The Compose configuration is for local evaluation/demo use.
-
-For production:
-
-- use secret management instead of demo database credentials
-- add authentication/authorization
-- use TLS
-- use managed PostgreSQL
-- use object storage for receipt evidence
-- use an authenticated inference endpoint
-- restrict Finance/admin routes
-- add backups and immutable centralized audit retention
-
-Those production controls are intentionally outside the local evaluation deployment.
+- authentication/RBAC;
+- TLS;
+- secret management;
+- managed PostgreSQL;
+- encrypted object storage;
+- authenticated inference;
+- backups;
+- centralized immutable audit retention;
+- rate limiting/observability.
