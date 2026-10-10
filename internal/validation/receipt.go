@@ -9,42 +9,130 @@ import (
 	"github.com/hemanth-shankar/expense-agent/internal/models"
 )
 
-type Severity string
+const monetaryTolerance = 0.01
 
 const (
-	SeverityInfo    Severity = "INFO"
-	SeverityWarning Severity = "WARNING"
-	SeverityError   Severity = "ERROR"
+	SeverityInfo    = "INFO"
+	SeverityWarning = "WARNING"
+	SeverityError   = "ERROR"
 )
 
 type ValidationIssue struct {
-	Code     string   `json:"code"`
-	Severity Severity `json:"severity"`
-	Message  string   `json:"message"`
+	Code     string `json:"code"`
+	Severity string `json:"severity"`
+	Message  string `json:"message"`
 }
 
 type ReceiptValidationResult struct {
-	Valid       bool              `json:"valid"`
-	LineItemSum float64           `json:"line_item_sum"`
-	Issues      []ValidationIssue `json:"issues"`
+	Valid bool `json:"valid"`
+
+	LineItemSum float64 `json:"line_item_sum"`
+
+	Issues []ValidationIssue `json:"issues"`
 }
 
-func NormalizeReceipt(receipt *models.ReceiptExtraction) {
-	receipt.Currency = NormalizeCurrency(receipt.Currency)
+func NormalizeReceipt(
+	receipt *models.ReceiptExtraction,
+) {
+	if receipt == nil {
+		return
+	}
+
+	receipt.DocumentType =
+		strings.TrimSpace(
+			receipt.DocumentType,
+		)
+
+	receipt.Merchant =
+		strings.TrimSpace(
+			receipt.Merchant,
+		)
+
+	receipt.ExpenseDate =
+		strings.TrimSpace(
+			receipt.ExpenseDate,
+		)
+
+	receipt.Currency =
+		NormalizeCurrency(
+			receipt.Currency,
+		)
+
+	receipt.ReceiptNumber =
+		strings.TrimSpace(
+			receipt.ReceiptNumber,
+		)
+
+	receipt.PaymentMethod =
+		strings.TrimSpace(
+			receipt.PaymentMethod,
+		)
+
+	receipt.CategorySuggestion =
+		strings.TrimSpace(
+			receipt.CategorySuggestion,
+		)
+
+	for i := range receipt.LineItems {
+
+		receipt.LineItems[i].Name =
+			strings.TrimSpace(
+				receipt.LineItems[i].Name,
+			)
+	}
 }
 
-func NormalizeCurrency(currency string) string {
-	switch strings.TrimSpace(strings.ToUpper(currency)) {
-	case "$", "US$", "USD":
+func NormalizeCurrency(
+	currency string,
+) string {
+
+	value :=
+		strings.ToUpper(
+			strings.TrimSpace(
+				currency,
+			),
+		)
+
+	switch value {
+
+	case "$",
+		"US$",
+		"USD$",
+		"USD":
 		return "USD"
-	case "₹", "RS", "RS.", "INR":
+
+	case "₹",
+		"RS",
+		"RS.",
+		"INR":
 		return "INR"
-	case "€", "EUR":
+
+	case "€",
+		"EUR":
 		return "EUR"
-	case "£", "GBP":
+
+	case "£",
+		"GBP":
 		return "GBP"
+
+	case "¥",
+		"JPY":
+		return "JPY"
+
+	case "AED":
+		return "AED"
+
+	case "CAD":
+		return "CAD"
+
+	case "AUD":
+		return "AUD"
+
+	case "SGD":
+		return "SGD"
+
 	default:
-		return strings.ToUpper(strings.TrimSpace(currency))
+		return value
 	}
 }
 
@@ -52,140 +140,326 @@ func ValidateReceipt(
 	receipt *models.ReceiptExtraction,
 ) ReceiptValidationResult {
 
-	result := ReceiptValidationResult{
-		Valid:  true,
-		Issues: []ValidationIssue{},
-	}
+	result :=
+		ReceiptValidationResult{
+			Valid: true,
 
-	if strings.TrimSpace(receipt.Merchant) == "" {
-		result.addIssue(
-			"MISSING_MERCHANT",
-			SeverityWarning,
-			"Merchant name is missing.",
+			Issues: []ValidationIssue{},
+		}
+
+	if receipt == nil {
+		addError(
+			&result,
+			"MISSING_RECEIPT",
+			"Receipt extraction is missing.",
 		)
+
+		return result
 	}
 
-	if receipt.TotalAmount <= 0 {
-		result.addIssue(
-			"INVALID_TOTAL",
-			SeverityError,
-			"Receipt total must be greater than zero.",
+	NormalizeReceipt(
+		receipt,
+	)
+
+	validateRequiredFields(
+		receipt,
+		&result,
+	)
+
+	validateMonetaryFields(
+		receipt,
+		&result,
+	)
+
+	validateLineItems(
+		receipt,
+		&result,
+	)
+
+	validateConfidence(
+		receipt,
+		&result,
+	)
+
+	result.Valid =
+		!containsError(
+			result.Issues,
+		)
+
+	return result
+}
+
+func validateRequiredFields(
+	receipt *models.ReceiptExtraction,
+	result *ReceiptValidationResult,
+) {
+
+	if receipt.Merchant == "" {
+		addError(
+			result,
+			"MISSING_MERCHANT",
+			"Merchant is missing.",
 		)
 	}
 
 	if receipt.ExpenseDate == "" {
-		result.addIssue(
-			"MISSING_DATE",
-			SeverityWarning,
+		addError(
+			result,
+			"MISSING_EXPENSE_DATE",
 			"Expense date is missing.",
 		)
 	} else {
-		_, err := time.Parse(
-			"2006-01-02",
-			receipt.ExpenseDate,
-		)
 
-		if err != nil {
-			result.addIssue(
-				"INVALID_DATE_FORMAT",
-				SeverityError,
-				"Expense date must use YYYY-MM-DD format.",
-			)
-		}
-	}
+		if _, err :=
+			time.Parse(
+				"2006-01-02",
+				receipt.ExpenseDate,
+			); err != nil {
 
-	if receipt.Currency == "" {
-		result.addIssue(
-			"MISSING_CURRENCY",
-			SeverityWarning,
-			"Currency could not be determined.",
-		)
-	}
-
-	if receipt.Subtotal > 0 {
-		expectedTotal :=
-			receipt.Subtotal + receipt.TaxAmount
-
-		if !moneyEqual(
-			expectedTotal,
-			receipt.TotalAmount,
-		) {
-			result.addIssue(
-				"TOTAL_MISMATCH",
-				SeverityError,
+			addError(
+				result,
+				"INVALID_EXPENSE_DATE",
 				fmt.Sprintf(
-					"Subtotal %.2f + tax %.2f = %.2f, but receipt total is %.2f.",
-					receipt.Subtotal,
-					receipt.TaxAmount,
-					expectedTotal,
-					receipt.TotalAmount,
+					"Expense date %q must use YYYY-MM-DD format.",
+					receipt.ExpenseDate,
 				),
 			)
 		}
 	}
 
+	if receipt.Currency == "" {
+		addError(
+			result,
+			"MISSING_CURRENCY",
+			"Currency is missing.",
+		)
+	}
+
+	if receipt.TotalAmount <= 0 {
+		addError(
+			result,
+			"INVALID_TOTAL",
+			"Receipt total must be greater than zero.",
+		)
+	}
+}
+
+func validateMonetaryFields(
+	receipt *models.ReceiptExtraction,
+	result *ReceiptValidationResult,
+) {
+
+	if receipt.Subtotal < 0 {
+		addError(
+			result,
+			"INVALID_SUBTOTAL",
+			"Subtotal cannot be negative.",
+		)
+	}
+
+	if receipt.TaxAmount < 0 {
+		addError(
+			result,
+			"INVALID_TAX",
+			"Tax amount cannot be negative.",
+		)
+	}
+
+	if receipt.ServiceCharge < 0 {
+		addError(
+			result,
+			"INVALID_SERVICE_CHARGE",
+			"Service charge cannot be negative.",
+		)
+	}
+
+	if receipt.TipAmount < 0 {
+		addError(
+			result,
+			"INVALID_TIP",
+			"Tip amount cannot be negative.",
+		)
+	}
+
+	if receipt.DiscountAmount < 0 {
+		addError(
+			result,
+			"INVALID_DISCOUNT",
+			"Discount amount must be represented as a positive value.",
+		)
+	}
+
+	if receipt.OtherFees < 0 {
+		addError(
+			result,
+			"INVALID_OTHER_FEES",
+			"Other fees cannot be negative.",
+		)
+	}
+
+	//
+	// If subtotal is unavailable, we cannot
+	// reliably verify the final arithmetic.
+	//
+	if receipt.Subtotal <= 0 {
+		return
+	}
+
+	expectedTotal :=
+		receipt.Subtotal +
+			receipt.TaxAmount +
+			receipt.ServiceCharge +
+			receipt.TipAmount +
+			receipt.OtherFees -
+			receipt.DiscountAmount
+
+	if !moneyEqual(
+		expectedTotal,
+		receipt.TotalAmount,
+	) {
+
+		addError(
+			result,
+			"TOTAL_MISMATCH",
+			fmt.Sprintf(
+				"Subtotal %.2f + tax %.2f + service charge %.2f + tip %.2f + other fees %.2f - discount %.2f = %.2f, but receipt total is %.2f.",
+				receipt.Subtotal,
+				receipt.TaxAmount,
+				receipt.ServiceCharge,
+				receipt.TipAmount,
+				receipt.OtherFees,
+				receipt.DiscountAmount,
+				expectedTotal,
+				receipt.TotalAmount,
+			),
+		)
+	}
+}
+
+func validateLineItems(
+	receipt *models.ReceiptExtraction,
+	result *ReceiptValidationResult,
+) {
+
+	if len(
+		receipt.LineItems,
+	) == 0 {
+
+		return
+	}
+
 	var lineItemSum float64
 
 	for _, item := range receipt.LineItems {
-		if item.Amount > 0 {
-			lineItemSum += item.Amount
-		}
+
+		lineItemSum +=
+			item.Amount
 	}
 
-	result.LineItemSum = roundMoney(lineItemSum)
+	result.LineItemSum =
+		roundMoney(
+			lineItemSum,
+		)
 
-	if receipt.Subtotal > 0 &&
-		!moneyEqual(lineItemSum, receipt.Subtotal) {
+	if receipt.Subtotal <= 0 {
+		return
+	}
 
-		result.addIssue(
+	if !moneyEqual(
+		result.LineItemSum,
+		receipt.Subtotal,
+	) {
+
+		addError(
+			result,
 			"LINE_ITEM_SUM_MISMATCH",
-			SeverityError,
 			fmt.Sprintf(
 				"Line items total %.2f, but receipt subtotal is %.2f.",
-				lineItemSum,
+				result.LineItemSum,
 				receipt.Subtotal,
 			),
 		)
 	}
-
-	if receipt.Confidence < 0.70 {
-		result.addIssue(
-			"LOW_EXTRACTION_CONFIDENCE",
-			SeverityWarning,
-			fmt.Sprintf(
-				"AI extraction confidence is %.2f.",
-				receipt.Confidence,
-			),
-		)
-	}
-
-	return result
 }
 
-func (r *ReceiptValidationResult) addIssue(
+func validateConfidence(
+	receipt *models.ReceiptExtraction,
+	result *ReceiptValidationResult,
+) {
+
+	if receipt.Confidence > 0 &&
+		receipt.Confidence < 0.85 {
+
+		result.Issues =
+			append(
+				result.Issues,
+				ValidationIssue{
+					Code: "LOW_CONFIDENCE",
+
+					Severity: SeverityWarning,
+
+					Message: fmt.Sprintf(
+						"AI extraction confidence is %.2f.",
+						receipt.Confidence,
+					),
+				},
+			)
+	}
+}
+
+func addError(
+	result *ReceiptValidationResult,
 	code string,
-	severity Severity,
 	message string,
 ) {
 
-	r.Issues = append(
-		r.Issues,
-		ValidationIssue{
-			Code:     code,
-			Severity: severity,
-			Message:  message,
-		},
-	)
+	result.Issues =
+		append(
+			result.Issues,
+			ValidationIssue{
+				Code: code,
 
-	if severity == SeverityError {
-		r.Valid = false
+				Severity: SeverityError,
+
+				Message: message,
+			},
+		)
+
+	result.Valid =
+		false
+}
+
+func containsError(
+	issues []ValidationIssue,
+) bool {
+
+	for _, issue := range issues {
+
+		if issue.Severity ==
+			SeverityError {
+
+			return true
+		}
 	}
+
+	return false
 }
 
-func moneyEqual(a, b float64) bool {
-	return math.Abs(a-b) < 0.01
+func moneyEqual(
+	left float64,
+	right float64,
+) bool {
+
+	return math.Abs(
+		left-right,
+	) <= monetaryTolerance
 }
 
-func roundMoney(value float64) float64 {
-	return math.Round(value*100) / 100
+func roundMoney(
+	value float64,
+) float64 {
+
+	return math.Round(
+		value*100,
+	) / 100
 }

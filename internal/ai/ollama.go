@@ -252,6 +252,10 @@ Use exactly this structure:
   "expense_date": "",
   "subtotal": 0,
   "tax_amount": 0,
+  "service_charge": 0,
+  "tip_amount": 0,
+  "discount_amount": 0,
+  "other_fees": 0,
   "total_amount": 0,
   "currency": "",
   "receipt_number": "",
@@ -281,6 +285,24 @@ General rules:
 - missing number = 0.
 - missing array = [].
 - confidence must be between 0 and 1.
+
+
+Financial-field rules:
+
+- subtotal: amount before tax, service charge, tip, and other fees.
+- tax_amount: total tax amount shown on the document.
+- service_charge: explicit service/service-charge amount. Use 0 if absent.
+- tip_amount: gratuity or tip amount. Use 0 if absent.
+- discount_amount: discount/coupon/promotion amount that reduces the total.
+  Return it as a positive number. Use 0 if absent.
+- other_fees: explicit fees not represented by tax, service charge, or tip,
+  such as airport fees, delivery fees, convenience fees, booking fees, etc.
+  Use 0 if absent.
+- total_amount: final amount paid or payable.
+
+Do not invent charges merely to make the arithmetic balance.
+Only populate a charge when it is visible on the document.
+
 
 For multi-page documents:
 
@@ -314,6 +336,10 @@ Before returning:
 
 - verify subtotal.
 - verify tax.
+- service_charge.
+- tip_amount.
+- discount_amount.
+- other_fees.
 - verify total.
 - check whether line item amounts are consistent with subtotal.
 
@@ -362,6 +388,10 @@ Use exactly this structure:
   "expense_date": "",
   "subtotal": 0,
   "tax_amount": 0,
+  "service_charge": 0,
+  "tip_amount": 0,
+  "discount_amount": 0,
+  "other_fees": 0,
   "total_amount": 0,
   "currency": "",
   "receipt_number": "",
@@ -397,6 +427,22 @@ For multi-page documents:
 - use the final grand/payable total.
 - do not add totals repeated on different pages.
 - extract line items across pages where possible.
+
+Financial-field rules:
+
+- subtotal: amount before tax, service charge, tip, and other fees.
+- tax_amount: total tax amount shown on the document.
+- service_charge: explicit service/service-charge amount. Use 0 if absent.
+- tip_amount: gratuity or tip amount. Use 0 if absent.
+- discount_amount: discount/coupon/promotion amount that reduces the total.
+  Return it as a positive number. Use 0 if absent.
+- other_fees: explicit fees not represented by tax, service charge, or tip,
+  such as airport fees, delivery fees, convenience fees, booking fees, etc.
+  Use 0 if absent.
+- total_amount: final amount paid or payable.
+
+Do not invent charges merely to make the arithmetic balance.
+Only populate a charge when it is visible on the document.
 
 Allowed categories:
 

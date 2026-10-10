@@ -13,6 +13,7 @@ import (
 	"github.com/hemanth-shankar/expense-agent/internal/models"
 	"github.com/hemanth-shankar/expense-agent/internal/persistence"
 	"github.com/hemanth-shankar/expense-agent/internal/policy"
+	"github.com/hemanth-shankar/expense-agent/internal/reports"
 	"github.com/hemanth-shankar/expense-agent/internal/workflow"
 )
 
@@ -62,6 +63,10 @@ type Handler struct {
 	repository ClaimRepository
 
 	clarificationService *claims.Service
+
+	reportRepository ExpenseReportRepository
+
+	reportService *reports.Service
 }
 
 type errorResponse struct {
@@ -79,7 +84,10 @@ func NewHandler(
 
 func NewHandlerWithRepository(
 	processor ExpenseProcessor,
-	repository ClaimRepository,
+	repository interface {
+		ClaimRepository
+		ExpenseReportRepository
+	},
 ) *Handler {
 
 	return &Handler{
@@ -90,6 +98,13 @@ func NewHandlerWithRepository(
 		clarificationService: claims.NewService(
 			repository,
 			policy.DemoUSDPolicy(),
+		),
+
+		reportRepository: repository,
+
+		reportService: reports.NewService(
+			processor,
+			repository,
 		),
 	}
 }
@@ -121,6 +136,26 @@ func (h *Handler) RegisterRoutes(
 	mux.HandleFunc(
 		"POST /api/v1/claims/{claimID}/clarifications",
 		h.resolveClarification,
+	)
+
+	mux.HandleFunc(
+		"POST /api/v1/expense-reports",
+		h.createExpenseReport,
+	)
+
+	mux.HandleFunc(
+		"GET /api/v1/expense-reports/{reportID}",
+		h.getExpenseReport,
+	)
+
+	mux.HandleFunc(
+		"GET /api/v1/employees/{employeeID}/expense-reports",
+		h.listEmployeeExpenseReports,
+	)
+
+	mux.HandleFunc(
+		"GET /api/v1/admin/expense-reports",
+		h.listAdminExpenseReports,
 	)
 }
 
