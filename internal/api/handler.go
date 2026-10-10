@@ -113,6 +113,8 @@ type Handler struct {
 
 	financeService *finance.Service
 
+	policyManager *policy.Manager
+
 	reportRepository ExpenseReportRepository
 
 	reportService *reports.Service
@@ -153,25 +155,59 @@ func NewHandlerWithRepository(
 
 ) *Handler {
 
+	companyPolicy :=
+		policy.DemoUSDPolicy()
+
+	clarificationService :=
+		claims.NewService(
+			repository,
+			companyPolicy,
+		)
+
+	financeService :=
+		finance.NewService(
+			repository,
+			companyPolicy,
+		)
+
+	var policyManager *policy.Manager
+
+	if provider, ok :=
+		any(repository).(policy.Provider); ok {
+
+		clarificationService =
+			claims.NewService(
+				repository,
+				companyPolicy,
+				provider,
+			)
+
+		financeService =
+			finance.NewService(
+				repository,
+				companyPolicy,
+				provider,
+			)
+	}
+
+	if store, ok :=
+		any(repository).(policy.ManagementStore); ok {
+
+		policyManager =
+			policy.NewManager(store)
+	}
+
 	return &Handler{
 
 		processor: processor,
 
 		repository: repository,
 
-		clarificationService: claims.NewService(
+		clarificationService: clarificationService,
 
-			repository,
+		financeService: financeService,
 
-			policy.DemoUSDPolicy(),
-		),
-
-		financeService: finance.NewService(
-
-			repository,
-
-			policy.DemoUSDPolicy(),
-		),
+		policyManager: policyManager,
 
 		reportRepository: repository,
 
@@ -270,6 +306,48 @@ func (h *Handler) RegisterRoutes(
 		"POST /api/v1/admin/claims/{claimID}/review",
 
 		h.reviewClaim,
+	)
+
+	mux.HandleFunc(
+
+		"GET /api/v1/admin/policies",
+
+		h.listPolicies,
+	)
+
+	mux.HandleFunc(
+
+		"GET /api/v1/admin/policies/active",
+
+		h.getActivePolicy,
+	)
+
+	mux.HandleFunc(
+
+		"GET /api/v1/admin/policies/{policyID}",
+
+		h.getPolicy,
+	)
+
+	mux.HandleFunc(
+
+		"POST /api/v1/admin/policies",
+
+		h.createPolicy,
+	)
+
+	mux.HandleFunc(
+
+		"PUT /api/v1/admin/policies/{policyID}",
+
+		h.updatePolicy,
+	)
+
+	mux.HandleFunc(
+
+		"POST /api/v1/admin/policies/{policyID}/publish",
+
+		h.publishPolicy,
 	)
 
 }
@@ -1194,7 +1272,7 @@ func WithCORS(
 
 				"Access-Control-Allow-Methods",
 
-				"GET, POST, OPTIONS",
+				"GET, POST, PUT, OPTIONS",
 			)
 
 			w.Header().Set(

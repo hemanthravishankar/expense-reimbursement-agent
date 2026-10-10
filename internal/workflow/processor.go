@@ -48,6 +48,8 @@ type Config struct {
 	FallbackModel string
 
 	Policy policy.Policy
+
+	PolicyProvider policy.Provider
 }
 
 type Result struct {
@@ -667,11 +669,51 @@ func (p *Processor) ProcessReceipt(
 	//
 	// Go code decides reimbursement.
 	//
+	companyPolicy :=
+		p.config.Policy
+
+	if p.config.PolicyProvider != nil {
+
+		activePolicy, policyErr :=
+			p.config.PolicyProvider.ActivePolicy(
+				ctx,
+			)
+
+		if policyErr != nil {
+
+			result.Warnings =
+				append(
+					result.Warnings,
+					fmt.Sprintf(
+						"active reimbursement policy could not be loaded: %v",
+						policyErr,
+					),
+				)
+
+			result.FinalStatus =
+				StatusHumanReviewRequired
+
+			if err :=
+				p.saveAudit(
+					result,
+					startedAt,
+				); err != nil {
+
+				return nil, err
+			}
+
+			return result, nil
+		}
+
+		companyPolicy =
+			activePolicy
+	}
+
 	decision :=
 		policy.Evaluate(
 			result.FinalExtraction,
 			employee,
-			p.config.Policy,
+			companyPolicy,
 		)
 
 	result.PolicyDecision =

@@ -141,6 +141,12 @@ ON policy_versions(status);
 CREATE INDEX IF NOT EXISTS idx_policy_versions_effective
 ON policy_versions(effective_from, effective_to);
 
+ALTER TABLE policy_versions
+ADD COLUMN IF NOT EXISTS published_by TEXT;
+
+ALTER TABLE policy_versions
+ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
 
 CREATE TABLE IF NOT EXISTS policy_rules (
     id BIGSERIAL PRIMARY KEY,

@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"context"
 	"fmt"
 	"math"
 
@@ -15,13 +16,21 @@ const (
 	StatusCurrencyMismatch = "CURRENCY_MISMATCH"
 )
 
+type Provider interface {
+	ActivePolicy(
+		ctx context.Context,
+	) (Policy, error)
+}
+
 type CategoryRule struct {
 	Allowed   bool    `json:"allowed"`
 	MaxAmount float64 `json:"max_amount"`
 }
 
 type Policy struct {
+	ID       string                             `json:"policy_id,omitempty"`
 	Name     string                             `json:"name"`
+	Version  int                                `json:"version,omitempty"`
 	Currency string                             `json:"currency"`
 	Limits   map[string]map[string]CategoryRule `json:"limits"`
 }
@@ -37,11 +46,16 @@ type Decision struct {
 	ReimbursableAmount float64 `json:"reimbursable_amount"`
 	ExcessAmount       float64 `json:"excess_amount"`
 	Reason             string  `json:"reason"`
+	PolicyID           string  `json:"policy_id,omitempty"`
+	PolicyName         string  `json:"policy_name,omitempty"`
+	PolicyVersion      int     `json:"policy_version,omitempty"`
 }
 
 func DemoUSDPolicy() Policy {
 	return Policy{
+		ID:       "POL-DEMO-USD-V1",
 		Name:     "NovaTech Demo Expense Policy",
+		Version:  1,
 		Currency: "USD",
 
 		Limits: map[string]map[string]CategoryRule{
@@ -95,6 +109,9 @@ func Evaluate(
 		Category:      receipt.CategorySuggestion,
 		Currency:      receipt.Currency,
 		ClaimedAmount: roundMoney(receipt.TotalAmount),
+		PolicyID:      companyPolicy.ID,
+		PolicyName:    companyPolicy.Name,
+		PolicyVersion: companyPolicy.Version,
 	}
 
 	if receipt.Currency != companyPolicy.Currency {

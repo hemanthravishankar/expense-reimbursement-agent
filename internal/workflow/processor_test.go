@@ -11,6 +11,7 @@ import (
 	"github.com/hemanth-shankar/expense-agent/internal/audit"
 	"github.com/hemanth-shankar/expense-agent/internal/duplicate"
 	"github.com/hemanth-shankar/expense-agent/internal/models"
+	"github.com/hemanth-shankar/expense-agent/internal/policy"
 )
 
 type fakeExtractor struct {
@@ -897,6 +898,100 @@ func TestNormalReceiptStillReachesPolicyAfterAdminReviewGate(
 
 		t.Fatal(
 			"normal unique claim must not require admin review",
+		)
+	}
+}
+
+type fakePolicyProvider struct {
+	companyPolicy policy.Policy
+	err           error
+}
+
+func (f fakePolicyProvider) ActivePolicy(
+	ctx context.Context,
+) (policy.Policy, error) {
+	return f.companyPolicy, f.err
+}
+
+func TestProcessReceiptUsesActivePolicyProvider(
+	t *testing.T,
+) {
+	auditDir := t.TempDir()
+	documentDir := t.TempDir()
+
+	extractor := &fakeExtractor{
+		primary: &models.ReceiptExtraction{
+			DocumentType:       "receipt",
+			Merchant:           "Policy Test Cafe",
+			ExpenseDate:        "2026-10-10",
+			Subtotal:           55.2,
+			TotalAmount:        55.2,
+			Currency:           "USD",
+			ReceiptNumber:      "POLICY-TEST-1",
+			CategorySuggestion: "Meals",
+			Confidence:         0.99,
+			LineItems: []models.ReceiptLineItem{
+				{
+					Name:     "Dinner",
+					Quantity: 1,
+					Amount:   55.2,
+				},
+			},
+		},
+	}
+
+	active := policy.DemoUSDPolicy()
+	active.ID = "POL-NEW"
+	active.Version = 2
+	active.Limits["B2"]["Meals"] = policy.CategoryRule{
+		Allowed:   true,
+		MaxAmount: 60,
+	}
+
+	config := DefaultConfig()
+	config.AuditDirectory = auditDir
+	config.DocumentDirectory = documentDir
+	config.PolicyProvider = fakePolicyProvider{
+		companyPolicy: active,
+	}
+
+	processor := NewProcessor(extractor, config)
+
+	result, err := processor.ProcessReceipt(
+		context.Background(),
+		"policy-test.png",
+		createWorkflowPNG(t),
+		models.Employee{
+			ID:    "EMP-POLICY",
+			Name:  "Policy Test",
+			Grade: "B2",
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if result.FinalStatus != policy.StatusApproved {
+		t.Fatalf("expected APPROVED from active policy, got %s", result.FinalStatus)
+	}
+
+	if result.PolicyDecision == nil {
+		t.Fatal("expected policy decision")
+	}
+
+	if result.PolicyDecision.PolicyID != "POL-NEW" ||
+		result.PolicyDecision.PolicyVersion != 2 {
+		t.Fatalf(
+			"expected active policy metadata POL-NEW v2, got %s v%d",
+			result.PolicyDecision.PolicyID,
+			result.PolicyDecision.PolicyVersion,
+		)
+	}
+
+	if result.PolicyDecision.ReimbursableAmount != 55.2 {
+		t.Fatalf(
+			"expected active policy to reimburse 55.20, got %.2f",
+			result.PolicyDecision.ReimbursableAmount,
 		)
 	}
 }

@@ -63,20 +63,29 @@ type ClarificationAnswerRequest struct {
 }
 
 type Service struct {
-	repository Repository
-	policy     policy.Policy
+	repository     Repository
+	policy         policy.Policy
+	policyProvider policy.Provider
 }
 
 func NewService(
 	repository Repository,
 	companyPolicy policy.Policy,
+	providers ...policy.Provider,
 ) *Service {
 
-	return &Service{
+	service := &Service{
 		repository: repository,
 
 		policy: companyPolicy,
 	}
+
+	if len(providers) > 0 {
+		service.policyProvider =
+			providers[0]
+	}
+
+	return service
 }
 
 func (s *Service) ResolveClarification(
@@ -309,11 +318,33 @@ func (s *Service) resolvePossibleDuplicate(
 			// with explanation can resume deterministic policy
 			// evaluation using the already validated extraction.
 			//
+			companyPolicy :=
+				s.policy
+
+			if s.policyProvider != nil {
+
+				activePolicy, policyErr :=
+					s.policyProvider.ActivePolicy(
+						ctx,
+					)
+
+				if policyErr != nil {
+					return nil,
+						fmt.Errorf(
+							"load active reimbursement policy: %w",
+							policyErr,
+						)
+				}
+
+				companyPolicy =
+					activePolicy
+			}
+
 			decision :=
 				policy.Evaluate(
 					result.FinalExtraction,
 					result.Employee,
-					s.policy,
+					companyPolicy,
 				)
 
 			result.PolicyDecision =

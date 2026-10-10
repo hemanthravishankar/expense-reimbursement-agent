@@ -141,3 +141,68 @@ func TestReviewRequiresNote(t *testing.T) {
 		t.Fatalf("expected ErrReviewNoteRequired, got %v", err)
 	}
 }
+
+type fakeActivePolicyProvider struct {
+	companyPolicy policy.Policy
+}
+
+func (f fakeActivePolicyProvider) ActivePolicy(
+	ctx context.Context,
+) (policy.Policy, error) {
+	return f.companyPolicy, nil
+}
+
+func TestApproveReviewUsesActivePolicyProvider(t *testing.T) {
+	repo := &fakeRepository{result: reviewableMealClaim()}
+
+	active := policy.DemoUSDPolicy()
+	active.ID = "POL-NEW"
+	active.Version = 2
+	active.Limits["B2"]["Meals"] = policy.CategoryRule{
+		Allowed:   true,
+		MaxAmount: 60,
+	}
+
+	service := NewService(
+		repo,
+		policy.DemoUSDPolicy(),
+		fakeActivePolicyProvider{companyPolicy: active},
+	)
+
+	result, err := service.ReviewClaim(
+		context.Background(),
+		"claim-1",
+		ReviewRequest{
+			Action:   ActionApprove,
+			Reviewer: "Finance User",
+			Note:     "Verified as legitimate.",
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if result.FinalStatus != policy.StatusApproved {
+		t.Fatalf("expected APPROVED, got %s", result.FinalStatus)
+	}
+
+	if result.PolicyDecision == nil {
+		t.Fatal("expected policy decision after approval")
+	}
+
+	if result.PolicyDecision.PolicyID != "POL-NEW" ||
+		result.PolicyDecision.PolicyVersion != 2 {
+		t.Fatalf(
+			"expected POL-NEW v2, got %s v%d",
+			result.PolicyDecision.PolicyID,
+			result.PolicyDecision.PolicyVersion,
+		)
+	}
+
+	if result.PolicyDecision.ReimbursableAmount != 55.2 {
+		t.Fatalf(
+			"expected reimbursable 55.20 under active policy, got %.2f",
+			result.PolicyDecision.ReimbursableAmount,
+		)
+	}
+}

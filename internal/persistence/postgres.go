@@ -86,6 +86,13 @@ func (r *PostgresRepository) initialize(
 		)
 	}
 
+	if err := r.ensureDefaultPolicy(ctx); err != nil {
+		return fmt.Errorf(
+			"initialize default reimbursement policy: %w",
+			err,
+		)
+	}
+
 	return nil
 }
 

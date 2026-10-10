@@ -19,22 +19,9 @@ func main() {
 		context.Background()
 
 	//
-	// AI client.
-	//
-	client :=
-		ai.NewOllamaClient()
-
-	//
-	// Expense processing workflow.
-	//
-	processor :=
-		workflow.NewProcessor(
-			client,
-			workflow.DefaultConfig(),
-		)
-
-	//
-	// PostgreSQL.
+	// PostgreSQL is initialized before the workflow because
+	// it is also the source of the currently published
+	// reimbursement policy.
 	//
 	databaseURL :=
 		os.Getenv(
@@ -67,6 +54,32 @@ func main() {
 	log.Println(
 		"PostgreSQL connection established",
 	)
+
+	//
+	// AI client.
+	//
+	client :=
+		ai.NewOllamaClient()
+
+	//
+	// Expense processing workflow.
+	//
+	// Every new claim resolves the active policy from
+	// PostgreSQL at decision time, so publishing a new
+	// policy version does not require restarting/rebuilding
+	// the API server.
+	//
+	workflowConfig :=
+		workflow.DefaultConfig()
+
+	workflowConfig.PolicyProvider =
+		repository
+
+	processor :=
+		workflow.NewProcessor(
+			client,
+			workflowConfig,
+		)
 
 	//
 	// HTTP API.
