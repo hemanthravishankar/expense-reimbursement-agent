@@ -4,13 +4,14 @@ AI-assisted expense processing with deterministic verification, duplicate/fraud 
 
 > **Core design principle:** the LLM understands and proposes; deterministic Go code verifies and enforces.
 
-## Demo Video
+### Demo Video
 
 A complete end-to-end demonstration of the Expense & Reimbursement Agent is available on YouTube:
 
 **[Watch the End-to-End Demo](https://youtu.be/ULSZTEfE8H4)**
 
 The demo covers multi-receipt processing, AI receipt extraction, deterministic validation, reimbursement policy enforcement, duplicate detection, employee clarification, cross-employee risk detection, Finance review, evidence comparison, and dynamic policy versioning.
+
 
 ## Why this project exists
 
