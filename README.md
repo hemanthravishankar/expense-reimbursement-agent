@@ -113,29 +113,105 @@ flowchart TD
 
 See [docs/TECH_STACK.md](docs/TECH_STACK.md) and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-## Quick start — recommended Docker Compose deployment
+## Reproduce the Application
 
-### Prerequisites
+The recommended way to reproduce the project is with Docker Compose. PostgreSQL, the Go API, and the production React/Nginx frontend run in containers. Ollama runs on the host machine and provides the local vision-model inference used for receipt extraction.
 
-- Docker Desktop / Docker Engine with Compose v2
-- Ollama running on the host
-- required models:
+### 1. Prerequisites
+
+Install the following before starting:
+
+- Git
+- Docker Desktop / Docker Engine with Docker Compose v2
+- Ollama running on the host machine
+
+Verify the main tools:
+
+```bash
+git --version
+docker --version
+docker compose version
+ollama --version
+```
+
+### 2. Clone the repository
+
+```bash
+git clone https://github.com/hemanthravishankar/expense-reimbursement-agent.git
+cd expense-reimbursement-agent
+git checkout v1.0.0
+```
+
+Using the `v1.0.0` tag reproduces the exact submitted version.
+
+### 3. Download the required AI models
+
+Start Ollama on the host, then pull both vision models:
 
 ```bash
 ollama pull qwen3-vl:4b-instruct
 ollama pull qwen3-vl:8b-instruct
 ```
 
-### Start
+Confirm that the models are available:
+
+```bash
+ollama list
+```
+
+The normal workflow uses `qwen3-vl:4b-instruct`. The larger `qwen3-vl:8b-instruct` model is used as a fresh fallback only when deterministic validation rejects the primary extraction.
+
+### 4. Run the deployment preflight
+
+From the repository root:
 
 ```bash
 ./scripts/docker-preflight.sh
+```
+
+The preflight script checks the local deployment prerequisites, host Ollama connectivity, and required models before the application is started.
+
+### 5. Build and start the application
+
+```bash
 docker compose up --build -d
+```
+
+Check container health:
+
+```bash
 docker compose ps
+```
+
+The expected services are:
+
+```text
+postgres    healthy
+api         healthy
+frontend    healthy
+```
+
+### 6. Run the smoke test
+
+```bash
 ./scripts/docker-smoke-test.sh
 ```
 
-Open:
+A successful run verifies:
+
+- API health;
+- active seeded reimbursement policy;
+- frontend availability.
+
+Expected ending:
+
+```text
+Smoke test passed.
+Frontend: http://localhost:5173
+API:      http://localhost:8080
+```
+
+### 7. Open the application
 
 ```text
 Frontend: http://localhost:5173
@@ -143,9 +219,44 @@ API:      http://localhost:8080
 Ollama:   http://localhost:11434
 ```
 
-The Compose deployment runs PostgreSQL, the Go API, and the frontend/Nginx container. Ollama remains on the host so Apple Silicon can use native Metal acceleration.
+The application contains separate Employee and Finance experiences in the frontend.
 
-Full instructions: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
+### 8. First-start behavior
+
+A fresh database is initialized automatically by the backend. The application creates the required PostgreSQL schema and seeds the published `NovaTech Demo Expense Policy` version 1 in USD, so no manual database preparation is required.
+
+For grade `B2`, the seeded demo policy includes:
+
+```text
+Meals            $50
+Transportation   $100
+Accommodation    $250
+Travel           $500
+Office Expense   $150
+Internet         $60
+Mobile           $60
+Entertainment    $75
+```
+
+### 9. Clean reset
+
+To reproduce the application again from a completely fresh database and evidence store:
+
+```bash
+docker compose down -v --remove-orphans
+docker compose up --build -d
+./scripts/docker-smoke-test.sh
+```
+
+`docker compose down -v` removes the Compose-managed PostgreSQL and application-data volumes, so use it only when a full reset is intended.
+
+### Deployment architecture note
+
+The Compose deployment runs PostgreSQL, the Go API, and the frontend/Nginx container. Ollama intentionally remains on the host. On Apple Silicon this allows Ollama to use native Metal acceleration instead of running model inference inside a Linux container.
+
+The API reaches host Ollama through `host.docker.internal`.
+
+For detailed deployment instructions and troubleshooting, see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
 ## Local development
 
