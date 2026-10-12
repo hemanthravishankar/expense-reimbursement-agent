@@ -16,8 +16,7 @@ This folder is the technical and product documentation set for the Expense & Rei
 10. [DEPLOYMENT.md](DEPLOYMENT.md) — reproducible Docker Compose setup.
 11. [TESTING.md](TESTING.md) and [TEST_MATRIX.md](TEST_MATRIX.md) — validation strategy.
 12. [SECURITY.md](SECURITY.md) and [ASSUMPTIONS_LIMITATIONS.md](ASSUMPTIONS_LIMITATIONS.md) — trust model and prototype boundaries.
-13. [DEMO_SCRIPT.md](DEMO_SCRIPT.md) — final submission recording.
-14. [SUBMISSION_CHECKLIST.md](SUBMISSION_CHECKLIST.md) — final handoff.
+13. [SUBMISSION_CHECKLIST.md](SUBMISSION_CHECKLIST.md) — final handoff.
 
 ## Core principle
 
